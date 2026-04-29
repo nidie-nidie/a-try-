@@ -9,6 +9,7 @@ find_package(glfw3 REQUIRED)
 
 add_executable(pos_debug
     pos_debug.c
+    pos_debug.h
 )
 
 target_link_libraries(pos_debug PRIVATE m glfw OpenGL::GL)

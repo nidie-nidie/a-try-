@@ -6,62 +6,7 @@
 #include <GLFW/glfw3.h>
 #include <mujoco/mujoco.h>
 
-typedef struct
-{
-    int qpos;
-    int qvel;
-} JointRef;
-
-typedef struct
-{
-    JointRef joint[4];
-    int joint_id[4];
-    JointRef wheel[2];
-    int actuator[6];
-    int base_body;
-    int base_freejoint;
-} ModelMap;
-
-typedef struct
-{
-    double target[4];
-    double last_tau[4];
-    double left_leg_length;
-    double right_leg_length;
-    double visual_left_leg_length;
-    double visual_right_leg_length;
-    double left_l0_pitch;
-    double right_l0_pitch;
-    double kp;
-    double kd;
-    double max_torque;
-    double min_leg_length;
-    double max_leg_length;
-    double min_l0_pitch;
-    double max_l0_pitch;
-    double hang_z;
-    double print_period;
-    double saved_base_qpos[7];
-    char input_command[160];
-} PosDebugState;
-
-enum
-{
-    JOINT_LEFT_REAR = 0,
-    JOINT_LEFT_FRONT = 1,
-    JOINT_RIGHT_FRONT = 2,
-    JOINT_RIGHT_REAR = 3,
-};
-
-static const double kPi = 3.14159265358979323846;
-static const double kLegL1 = 0.215;
-static const double kLegL2 = 0.258;
-static const double kLegL3 = 0.258;
-static const double kLegL4 = 0.215;
-static const double kJ0Offset = -0.19163715;
-static const double kJ1Offset = 0.19163715 + 3.14159265358979323846;
-static const double kJ2Offset = 0.19163715 + 3.14159265358979323846;
-static const double kJ3Offset = -0.19163715;
+#include "pos_debug.h"
 
 static mjModel *g_model = 0;
 static mjData *g_data = 0;
@@ -208,12 +153,12 @@ static void build_model_map(const mjModel *m, ModelMap *map)
 
 static void widen_active_joint_ranges(mjModel *m, const ModelMap *map)
 {
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
     {
         int id = map->joint_id[i];
         m->jnt_limited[id] = 1;
-        m->jnt_range[2 * id] = -1.8;
-        m->jnt_range[2 * id + 1] = 1.8;
+        m->jnt_range[2 * id] = kActiveJointRangeMin;
+        m->jnt_range[2 * id + 1] = kActiveJointRangeMax;
     }
 }
 
@@ -238,7 +183,7 @@ static void print_model_map(const mjModel *m, const ModelMap *map)
     };
 
     printf("\nModel mapping check:\n");
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < POS_DEBUG_ACTUATOR_COUNT; ++i)
     {
         const int actuator_id = map->actuator[i];
         const int joint_id = i < 4 ? map->joint_id[i] : m->actuator_trnid[2 * actuator_id];
@@ -275,7 +220,7 @@ static void save_hang_pose(const mjModel *m, mjData *d, const ModelMap *map, Pos
     state->saved_base_qpos[5] = 0.0;
     state->saved_base_qpos[6] = 0.0;
 
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < POS_DEBUG_BASE_QPOS_SIZE; ++i)
     {
         d->qpos[base_qpos + i] = state->saved_base_qpos[i];
     }
@@ -287,11 +232,11 @@ static void hold_base_pose(const mjModel *m, mjData *d, const ModelMap *map, con
     int base_qpos = m->jnt_qposadr[map->base_freejoint];
     int base_qvel = m->jnt_dofadr[map->base_freejoint];
 
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < POS_DEBUG_BASE_QPOS_SIZE; ++i)
     {
         d->qpos[base_qpos + i] = state->saved_base_qpos[i];
     }
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < POS_DEBUG_BASE_QVEL_SIZE; ++i)
     {
         d->qvel[base_qvel + i] = 0.0;
     }
@@ -361,7 +306,7 @@ static void apply_position_control(const mjModel *m, mjData *d, const ModelMap *
         d->ctrl[i] = 0.0;
     }
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
     {
         const int actuator = map->actuator[i];
         const double q = d->qpos[map->joint[i].qpos];
@@ -451,13 +396,13 @@ static void set_initial_target_pose(const mjModel *m, mjData *d, const ModelMap 
     solve_targets(state);
     hold_base_pose(m, d, map, state);
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
     {
         d->qpos[map->joint[i].qpos] = state->target[i];
         d->qvel[map->joint[i].qvel] = 0.0;
     }
 
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < POS_DEBUG_WHEEL_COUNT; ++i)
     {
         d->qvel[map->wheel[i].qvel] = 0.0;
     }
@@ -490,11 +435,15 @@ static void print_initial_pose(const mjData *d, const ModelMap *map, const PosDe
            state->target[JOINT_RIGHT_REAR]);
 }
 
+
+
+
+
 static void update_keyboard_command(GLFWwindow *window, PosDebugState *state)
 {
-    const double length_rate = 0.12;
-    const double pitch_rate = 0.8;
-    const double dt = 1.0 / 60.0;
+    const double length_rate = kKeyboardLengthRate;
+    const double pitch_rate = kKeyboardPitchRate;
+    const double dt = kKeyboardControlDt;
     const double length_step = length_rate * dt;
     const double pitch_step = pitch_rate * dt;
 
@@ -502,10 +451,10 @@ static void update_keyboard_command(GLFWwindow *window, PosDebugState *state)
 
     if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
     {
-        state->visual_left_leg_length = state->min_leg_length + state->max_leg_length - 0.20;
-        state->visual_right_leg_length = state->min_leg_length + state->max_leg_length - 0.20;
-        state->left_l0_pitch = 0.0;
-        state->right_l0_pitch = 0.0;
+        state->visual_left_leg_length = kResetVisualLegLength;
+        state->visual_right_leg_length = kResetVisualLegLength;
+        state->left_l0_pitch = kResetL0Pitch;
+        state->right_l0_pitch = kResetL0Pitch;
         append_input_command(state, "R reset");
         return;
     }
@@ -580,6 +529,11 @@ static void update_keyboard_command(GLFWwindow *window, PosDebugState *state)
     state->right_l0_pitch = clamp(state->right_l0_pitch, state->min_l0_pitch, state->max_l0_pitch);
 }
 
+
+
+
+
+
 static void mouse_button_callback(GLFWwindow *window, int button, int act, int mods)
 {
     (void)button;
@@ -591,6 +545,11 @@ static void mouse_button_callback(GLFWwindow *window, int button, int act, int m
     g_button_right = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     glfwGetCursorPos(window, &g_last_x, &g_last_y);
 }
+
+
+
+
+
 
 static void mouse_move_callback(GLFWwindow *window, double xpos, double ypos)
 {
@@ -693,7 +652,7 @@ static int run_viewer(mjModel *m, mjData *d, const ModelMap *map, PosDebugState 
         return 1;
     }
 
-    GLFWwindow *window = glfwCreateWindow(1200, 900, "mujoco position debug", 0, 0);
+    GLFWwindow *window = glfwCreateWindow(kViewerWidth, kViewerHeight, kWindowTitle, 0, 0);
     if (!window)
     {
         glfwTerminate();
@@ -711,14 +670,21 @@ static int run_viewer(mjModel *m, mjData *d, const ModelMap *map, PosDebugState 
     mjv_defaultScene(&g_scene);
     mjr_defaultContext(&g_context);
 
-    g_camera.distance = 2.0;
-    g_camera.azimuth = 135.0;
-    g_camera.elevation = -20.0;
-    g_camera.lookat[0] = 0.0;
-    g_camera.lookat[1] = 0.0;
-    g_camera.lookat[2] = 0.35;
 
-    mjv_makeScene(m, &g_scene, 2000);
+
+
+    g_camera.distance = kCameraDistance;
+    g_camera.azimuth = kCameraAzimuth;
+    g_camera.elevation = kCameraElevation;
+    g_camera.lookat[0] = kCameraLookatX;
+    g_camera.lookat[1] = kCameraLookatY;
+    g_camera.lookat[2] = kCameraLookatZ;
+
+
+
+
+    
+    mjv_makeScene(m, &g_scene, kSceneMaxGeom);
     mjr_makeContext(m, &g_context, mjFONTSCALE_150);
 
     glfwSetKeyCallback(window, keyboard_callback);
@@ -790,26 +756,28 @@ static int run_headless(mjModel *m, mjData *d, const ModelMap *map, PosDebugStat
 
 int main(int argc, char **argv)
 {
-    const char *model_path = "/home/shun/MuJoCoBin/rm_control/MJCF/env.xml";
+    const char *model_path = kDefaultModelPath;
     int headless = 0;
-    double sim_time = 5.0;
+    double sim_time = kDefaultSimTime;
 
     PosDebugState state;
     memset(&state, 0, sizeof(state));
-    state.kp = 45.0;
-    state.kd = 4.0;
-    state.max_torque = 18.0;
-    state.min_leg_length = 0.11;
-    state.max_leg_length = 0.35;
-    state.min_l0_pitch = -0.60;
-    state.max_l0_pitch = 0.60;
-    state.visual_left_leg_length = state.min_leg_length + state.max_leg_length - 0.20;
-    state.visual_right_leg_length = state.min_leg_length + state.max_leg_length - 0.20;
-    state.left_l0_pitch = 0.0;
-    state.right_l0_pitch = 0.0;
-    state.hang_z = 0.55;
-    state.print_period = 0.25;
+    state.kp = kDefaultKp;
+    state.kd = kDefaultKd;
+    state.max_torque = kDefaultMaxTorque;
+    state.min_leg_length = kDefaultMinLegLength;
+    state.max_leg_length = kDefaultMaxLegLength;
+    state.min_l0_pitch = kDefaultMinL0Pitch;
+    state.max_l0_pitch = kDefaultMaxL0Pitch;
+    state.visual_left_leg_length = kDefaultVisualLegLength;
+    state.visual_right_leg_length = kDefaultVisualLegLength;
+    state.left_l0_pitch = kDefaultL0Pitch;
+    state.right_l0_pitch = kDefaultL0Pitch;
+    state.hang_z = kDefaultHangZ;
+    state.print_period = kDefaultPrintPeriod;
     clear_input_command(&state);
+
+
 
     for (int i = 1; i < argc; ++i)
     {
