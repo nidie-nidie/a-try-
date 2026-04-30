@@ -34,7 +34,6 @@ PID_Info_TypeDef legr_pid;
 PID_Info_TypeDef roll_pid;
 PID_Info_TypeDef tp_pid;
 PID_Info_TypeDef turn_pid;
-
 uint32_t CHASS_FSM_TIME = 3; // 3ms的底盘控制周期，对齐底盘控制频率
 
 void mySaturate(float *in, float min, float max)
@@ -220,11 +219,8 @@ void ConsoleStandUp(void)
 {
     // ===腿部位置控制===
     float phi1_phi4_l[2], phi1_phi4_r[2];
-    float solver_leg_length = MIN_LEG_LENGTH + MAX_LEG_LENGTH - chassis_move.leg_set;
-    float phi0 = M_PI_2 + INIT_L0_PITCH;
-
-    CalcPhi1AndPhi4(phi0, solver_leg_length, phi1_phi4_l);
-    CalcPhi1AndPhi4(phi0, solver_leg_length, phi1_phi4_r);
+    CalcPhi1AndPhi4(M_PI_2, chassis_move.leg_set, phi1_phi4_l);
+    CalcPhi1AndPhi4(M_PI_2, chassis_move.leg_set, phi1_phi4_r);
 
     // 当解算出的角度正常时，设置目标角度
     if (!(isnan(phi1_phi4_l[0]) || isnan(phi1_phi4_l[1]) || isnan(phi1_phi4_r[0]) ||

@@ -32,6 +32,8 @@
 
 // 关节电机相关参数
 #define MAX_TORQUE_PROTECT (25.0f) // (Nm)最大扭矩保护
+
+
 // DM控制参数
 #define CALIBRATE_VEL_KD (4.0f)  // 校准MIT速度控制KD
 #define ZERO_FORCE_VEL_KD (4.0f) // 无力MIT速度控制KD
@@ -39,6 +41,8 @@
 #define NORMAL_POS_KD (1.0f)     // 正常MIT位置控制KD
 #define DEBUG_POS_KP (8.0f)      // 调试MIT位置控制KP
 #define DEBUG_POS_KD (0.8f)      // 调试MIT位置控制KD
+
+
 // DM电机限位
 #define MIN_J0_ANGLE (-0.6f) // (rad)关节角度下限
 #define MIN_J1_ANGLE (-1.8f) // (rad)关节角度下限
@@ -85,7 +89,7 @@
 #define J3_DIRECTION (1)
 
 #define W0_DIRECTION (1)
-#define W1_DIRECTION (-1)
+#define W1_DIRECTION (1)
 
 // 轮子相关参数
 #define WHEEL_MASS (0.65f)     // (kg)轮子重量
@@ -93,7 +97,8 @@
 #define WHEEL_BASE (0.48f)  // (m)驱动轮轴距，即左右轮之间的默认距离
 
 // 机器人物理参数
-#define BODY_MASS (10.0f)                   // (kg)机身重量
+// #define BODY_MASS (10.0f)                   // (kg)机身重量
+
 #define BODY_GRAVITY (BODY_MASS * GRAVITY) // (N)机身重力
 
 // 底盘校准相关参数

@@ -30,24 +30,12 @@ cmake --build build_pos_debug -j
 ```
 
 
-悬空初始姿态，正常仿真：
-./mujoco_control_extract/build/mujoco_bridge --hang-init MJCF/env.xml
-
-落地初始姿态，正常仿真：
-./mujoco_control_extract/build/mujoco_bridge --ground-init MJCF/env.xml
-
-只冻结初始姿态，不跑仿真：
-./mujoco_control_extract/build/mujoco_bridge --freeze-init --hang-init MJCF/env.xml
-
-或者落地冻结：
-./mujoco_control_extract/build/mujoco_bridge --freeze-init --ground-init MJCF/env.xml
 
 
 
 
 
-
-push 到 git hub 上面的 指令
+push 到 git hub dev 上面的 指令
 cd /home/shun/MuJoCoBin/rm_control
 git fetch origin
 git switch -c dev

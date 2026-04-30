@@ -13,13 +13,21 @@ extern INS_t INS;
 
 static float sim_dt_s = 0.003f;
 
+static float sim_mit_torque(float position_set, float velocity_set, float kp, float kd, float torque_ff,
+                            const DM_Motor_Info_Typedef *motor)
+{
+    return kp * (position_set - motor->Data.Position) +
+           kd * (velocity_set - motor->Data.Velocity) +
+           torque_ff;
+}
+
 void SimController_Init(void)
 {
     memset(&INS, 0, sizeof(INS));
 
     INS.ins_flag = 1;
     chassis_move.start_flag = 1;
-    chassis_move.mode = CHASSIS_SAFE;
+    chassis_move.mode = CHASSIS_STAND_UP;
     chassis_move.leg_set = INIT_LEG_LENGTH;
     chassis_move.last_leg_set = INIT_LEG_LENGTH;
     chassis_move.roll_set = INIT_ROLL;
@@ -76,6 +84,11 @@ void SimController_SetCommand(float v_set, float x_set, float leg_set, float rol
     chassis_move.turn_set = yaw_set;
 }
 
+void SimController_SetMode(int mode)
+{
+    chassis_move.mode = (ChassisMode_e)mode;
+}
+
 void SimController_Step(float dt)
 {
     sim_dt_s = dt;
@@ -86,6 +99,8 @@ void SimController_Step(float dt)
 
     ChassisR_control_loop();
     ChassisL_control_loop();
+
+    ChassisConsole();
 }
 
 void SimController_GetOutput(SimControllerOutput *output)
@@ -95,12 +110,66 @@ void SimController_GetOutput(SimControllerOutput *output)
         return;
     }
 
-    // Match the signs used by ChassisL_task/ChassisR_task when sending CAN torque.
-    output->joint_torque[0] = -left.torque_set[1];
-    output->joint_torque[1] = -left.torque_set[0];
-    output->joint_torque[2] = -right.torque_set[0];
-    output->joint_torque[3] = -right.torque_set[1];
+    memset(output, 0, sizeof(*output));
 
-    output->wheel_torque[0] = left.wheel_T;
-    output->wheel_torque[1] = right.wheel_T;
+    if (chassis_move.start_flag != 1)
+    {
+        return;
+    }
+
+    switch (chassis_move.mode)
+    {
+    case CHASSIS_STAND_UP:
+        output->joint_torque[0] = sim_mit_torque(left.position_set[0], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+                                                 chassis_move.joint_motor[0]);
+        output->joint_torque[1] = sim_mit_torque(left.position_set[1], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+                                                 chassis_move.joint_motor[1]);
+        output->joint_torque[2] = sim_mit_torque(right.position_set[0], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+                                                 chassis_move.joint_motor[2]);
+        output->joint_torque[3] = sim_mit_torque(right.position_set[1], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+                                                 chassis_move.joint_motor[3]);
+        break;
+
+    case CHASSIS_CALIBRATE:
+        output->joint_torque[0] = sim_mit_torque(0.0f, left.velocity_set[0], 0.0f, CALIBRATE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[0]);
+        output->joint_torque[1] = sim_mit_torque(0.0f, left.velocity_set[1], 0.0f, CALIBRATE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[1]);
+        output->joint_torque[2] = sim_mit_torque(0.0f, right.velocity_set[0], 0.0f, CALIBRATE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[2]);
+        output->joint_torque[3] = sim_mit_torque(0.0f, right.velocity_set[1], 0.0f, CALIBRATE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[3]);
+        break;
+
+    case CHASSIS_SAFE:
+        output->joint_torque[0] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[1],
+                                                 chassis_move.joint_motor[0]);
+        output->joint_torque[1] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[0],
+                                                 chassis_move.joint_motor[1]);
+        output->joint_torque[2] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -right.torque_set[0],
+                                                 chassis_move.joint_motor[2]);
+        output->joint_torque[3] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -right.torque_set[1],
+                                                 chassis_move.joint_motor[3]);
+        break;
+
+    case CHASSIS_OFF:
+    default:
+        output->joint_torque[0] = sim_mit_torque(0.0f, 0.0f, 0.0f, ZERO_FORCE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[0]);
+        output->joint_torque[1] = sim_mit_torque(0.0f, 0.0f, 0.0f, ZERO_FORCE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[1]);
+        output->joint_torque[2] = sim_mit_torque(0.0f, 0.0f, 0.0f, ZERO_FORCE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[2]);
+        output->joint_torque[3] = sim_mit_torque(0.0f, 0.0f, 0.0f, ZERO_FORCE_VEL_KD, 0.0f,
+                                                 chassis_move.joint_motor[3]);
+        break;
+    }
+
+    if (chassis_move.mode == CHASSIS_STAND_UP ||
+        chassis_move.mode == CHASSIS_SAFE ||
+        chassis_move.mode == CHASSIS_CALIBRATE)
+    {
+        output->wheel_torque[0] = left.wheel_T;
+        output->wheel_torque[1] = right.wheel_T;
+    }
 }

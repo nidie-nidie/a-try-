@@ -35,6 +35,7 @@ typedef struct
 void SimController_Init(void);
 void SimController_SetState(const SimControllerState *state);
 void SimController_SetCommand(float v_set, float x_set, float leg_set, float roll_set, float yaw_set);
+void SimController_SetMode(int mode);
 void SimController_Step(float dt);
 void SimController_GetOutput(SimControllerOutput *output);
 

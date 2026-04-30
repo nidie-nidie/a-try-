@@ -25,3 +25,19 @@
 ```bash
 ./mujoco_control_extract/build/mujoco_bridge --freeze-init --ground-init MJCF/env.xml
 ```
+
+push 到 git hub dev 上面的 指令
+cd /home/shun/MuJoCoBin/rm_control
+git fetch origin
+git switch -c dev
+git add .gitignore
+git commit -m "Ignore Zone.Identifier files"
+git push -u origin dev
+
+
+
+
+
+
+cmake --build mujoco_control_extract/build --target mujoco_bridge
+./mujoco_control_extract/build/mujoco_bridge --ground-init MJCF/env.xml

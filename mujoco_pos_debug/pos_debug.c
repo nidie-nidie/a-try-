@@ -111,6 +111,9 @@ static int find_required_id(const mjModel *m, int type, const char *name)
     return id;
 }
 
+
+
+
 static int find_optional_id(const mjModel *m, int type, const char *name)
 {
     return mj_name2id(m, type, name);

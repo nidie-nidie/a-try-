@@ -13,6 +13,7 @@
 
 typedef struct
 {
+    int id;
     int qpos;
     int qvel;
 } JointRef;
@@ -37,6 +38,8 @@ static int g_button_middle = 0;
 static int g_button_right = 0;
 static double g_last_x = 0.0;
 static double g_last_y = 0.0;
+static mjtNum g_joint_ctrl_sign[4] = {1.0, 1.0, 1.0, 1.0};
+static mjtNum g_wheel_ctrl_sign[2] = {1.0, 1.0};
 
 static int find_required_id(const mjModel *m, int type, const char *name)
 {
@@ -62,7 +65,7 @@ static int find_optional_id(const mjModel *m, int type, const char *name)
 static JointRef find_joint(const mjModel *m, const char *name)
 {
     int id = find_required_id(m, mjOBJ_JOINT, name);
-    JointRef ref = {m->jnt_qposadr[id], m->jnt_dofadr[id]};
+    JointRef ref = {id, m->jnt_qposadr[id], m->jnt_dofadr[id]};
     return ref;
 }
 
@@ -190,17 +193,15 @@ static int calc_phi1_phi4(double phi0, double leg_length, double phi1_phi4[2])
     return 1;
 }
 
-static void calc_pos_debug_initial_joint_qpos(mjtNum joint_qpos[4])
+static void calc_initial_stand_joint_qpos(mjtNum joint_qpos[4])
 {
-    const double visual_leg_length = INIT_LEG_LENGTH;
-    const double solver_leg_length = MIN_LEG_LENGTH + MAX_LEG_LENGTH - visual_leg_length;
-    const double l0_pitch = INIT_L0_PITCH;
-    const double phi0 = M_PI_2 + l0_pitch;
+    const double leg_length = INIT_LEG_LENGTH;
+    const double phi0 = M_PI_2;
     double phi1_phi4[2] = {0.0, 0.0};
 
-    if (!calc_phi1_phi4(phi0, solver_leg_length, phi1_phi4))
+    if (!calc_phi1_phi4(phi0, leg_length, phi1_phi4))
     {
-        fprintf(stderr, "Failed to calculate pos_debug initial pose.\n");
+        fprintf(stderr, "Failed to calculate initial stand pose.\n");
         exit(2);
     }
 
@@ -298,7 +299,7 @@ static void set_initial_stand_pose(mjModel *m, mjData *d, const ModelMap *map, i
     int base_qpos = m->jnt_qposadr[map->base_freejoint];
     int base_qvel = m->jnt_dofadr[map->base_freejoint];
 
-    calc_pos_debug_initial_joint_qpos(joint_qpos);
+    calc_initial_stand_joint_qpos(joint_qpos);
 
     const int init_key = find_optional_id(m, mjOBJ_KEY, init_key_name);
     if (init_key >= 0)
@@ -311,6 +312,7 @@ static void set_initial_stand_pose(mjModel *m, mjData *d, const ModelMap *map, i
         memset(d->qvel, 0, sizeof(mjtNum) * m->nv);
         memset(d->ctrl, 0, sizeof(mjtNum) * m->nu);
         mj_forward(m, d);
+        relax_closed_chain_pose(m, d, map);
 
         if (freeze_init)
         {
@@ -411,16 +413,38 @@ static void read_state(const mjModel *m, const mjData *d, const ModelMap *map, S
     state->body_v = (float)d->qvel[base_qvel + 0];
 }
 
+static double measure_leg_length(const mjModel *m, const mjData *d, const ModelMap *map, int left_leg)
+{
+    const int hip_a_joint = left_leg ? map->joint[0].id : map->joint[2].id;
+    const int hip_b_joint = left_leg ? map->joint[1].id : map->joint[3].id;
+    const int wheel_joint = left_leg ? map->wheel[0].id : map->wheel[1].id;
+
+    const int hip_a_body = m->jnt_bodyid[hip_a_joint];
+    const int hip_b_body = m->jnt_bodyid[hip_b_joint];
+    const int wheel_body = m->jnt_bodyid[wheel_joint];
+
+    double hip_mid[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        hip_mid[i] = 0.5 * (d->xpos[3 * hip_a_body + i] + d->xpos[3 * hip_b_body + i]);
+    }
+
+    const double dx = d->xpos[3 * wheel_body + 0] - hip_mid[0];
+    const double dy = d->xpos[3 * wheel_body + 1] - hip_mid[1];
+    const double dz = d->xpos[3 * wheel_body + 2] - hip_mid[2];
+    return sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 
 
 
 
 static void write_output(mjData *d, const ModelMap *map, const SimControllerOutput *output)
 {
-    d->ctrl[map->actuator[0]] = output->joint_torque[0];
-    d->ctrl[map->actuator[1]] = output->joint_torque[1];
-    d->ctrl[map->actuator[2]] = output->joint_torque[2];
-    d->ctrl[map->actuator[3]] = output->joint_torque[3];
+    d->ctrl[map->actuator[0]] = g_joint_ctrl_sign[0] * output->joint_torque[0];
+    d->ctrl[map->actuator[1]] = g_joint_ctrl_sign[1] * output->joint_torque[1];
+    d->ctrl[map->actuator[2]] = g_joint_ctrl_sign[2] * output->joint_torque[2];
+    d->ctrl[map->actuator[3]] = g_joint_ctrl_sign[3] * output->joint_torque[3];
     d->ctrl[map->actuator[4]] = output->wheel_torque[0];
     d->ctrl[map->actuator[5]] = output->wheel_torque[1];
 }
@@ -527,8 +551,12 @@ static void step_controller(const mjModel *m, mjData *d, const ModelMap *map, in
 
     if (print_line)
     {
+        const double measured_left = measure_leg_length(m, d, map, 1);
+        const double measured_right = measure_leg_length(m, d, map, 0);
+
         printf("t=%6.3f pos=[% .3f % .3f % .3f] rpy=[% .3f % .3f % .3f] "
-               "L0=[% .3f % .3f] phi1=[% .3f % .3f] phi4=[% .3f % .3f] "
+               "vmcL0=[% .3f % .3f] measL=[% .3f % .3f] "
+               "phi1=[% .3f % .3f] phi4=[% .3f % .3f] "
                "u=[% .2f % .2f % .2f % .2f | % .2f % .2f]\n",
                d->time,
                state.body_x,
@@ -539,6 +567,8 @@ static void step_controller(const mjModel *m, mjData *d, const ModelMap *map, in
                state.yaw,
                left.L0,
                right.L0,
+               measured_left,
+               measured_right,
                left.phi1,
                right.phi1,
                left.phi4,
@@ -650,6 +680,8 @@ int main(int argc, char **argv)
     int zero_wheels = 0;
     int invert_right_joints = 0;
     int freeze_init = 0;
+    int start_mode = CHASSIS_STAND_UP;
+    double sim_time = 100.0;
     const char *init_key_name = "pos_debug_hang";
     for (int i = 1; i < argc; ++i)
     {
@@ -673,6 +705,58 @@ int main(int argc, char **argv)
         {
             freeze_init = 1;
         }
+        else if (strcmp(argv[i], "--time") == 0 && i + 1 < argc)
+        {
+            sim_time = atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc)
+        {
+            const char *mode = argv[++i];
+            if (strcmp(mode, "stand") == 0)
+            {
+                start_mode = CHASSIS_STAND_UP;
+            }
+            else if (strcmp(mode, "safe") == 0)
+            {
+                start_mode = CHASSIS_SAFE;
+            }
+            else if (strcmp(mode, "off") == 0)
+            {
+                start_mode = CHASSIS_OFF;
+            }
+            else
+            {
+                fprintf(stderr, "--mode expects stand, safe, or off.\n");
+                return 2;
+            }
+        }
+        else if (strcmp(argv[i], "--joint-signs") == 0 && i + 1 < argc)
+        {
+            const char *signs = argv[++i];
+            if (strlen(signs) != 4)
+            {
+                fprintf(stderr, "--joint-signs expects four characters, for example +-+-.\n");
+                return 2;
+            }
+            for (int j = 0; j < 4; ++j)
+            {
+                if (signs[j] == '+')
+                {
+                    g_joint_ctrl_sign[j] = 1.0;
+                }
+                else if (signs[j] == '-')
+                {
+                    g_joint_ctrl_sign[j] = -1.0;
+                }
+                else
+                {
+                    fprintf(stderr, "--joint-signs only accepts + or - characters.\n");
+                    return 2;
+                }
+            }
+        }
+       
+        
         else if (strcmp(argv[i], "--init-key") == 0 && i + 1 < argc)
         {
             init_key_name = argv[++i];
@@ -712,8 +796,8 @@ int main(int argc, char **argv)
     build_model_map(m, &map);
     set_initial_stand_pose(m, d, &map, freeze_init, init_key_name);
     SimController_Init();
+    SimController_SetMode(start_mode);
 
-    double sim_time = 100.0;
     int result = headless ? run_headless(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init) : run_viewer(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init);
 
     mj_deleteData(d);
