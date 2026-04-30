@@ -155,6 +155,61 @@ static int is_closed_chain_model(const mjModel *m)
            find_optional_id(m, mjOBJ_JOINT, "jJM") >= 0;
 }
 
+static double wrap_pi(double value)
+{
+    while (value > M_PI)
+    {
+        value -= 2.0 * M_PI;
+    }
+    while (value < -M_PI)
+    {
+        value += 2.0 * M_PI;
+    }
+    return value;
+}
+
+static double sim_theta_transform(double angle, double dangle, int direction)
+{
+    return wrap_pi((angle + dangle) * (double)direction);
+}
+
+static int calc_phi1_phi4(double phi0, double leg_length, double phi1_phi4[2])
+{
+    const double cos_beta1 = (LEG_L1 * LEG_L1 + leg_length * leg_length - LEG_L2 * LEG_L2) /
+                             (2.0 * LEG_L1 * leg_length);
+    const double cos_beta2 = (LEG_L4 * LEG_L4 + leg_length * leg_length - LEG_L3 * LEG_L3) /
+                             (2.0 * LEG_L4 * leg_length);
+
+    if (cos_beta1 < -1.0 || cos_beta1 > 1.0 || cos_beta2 < -1.0 || cos_beta2 > 1.0)
+    {
+        return 0;
+    }
+
+    phi1_phi4[0] = phi0 + acos(cos_beta1);
+    phi1_phi4[1] = phi0 - acos(cos_beta2);
+    return 1;
+}
+
+static void calc_pos_debug_initial_joint_qpos(mjtNum joint_qpos[4])
+{
+    const double visual_leg_length = INIT_LEG_LENGTH;
+    const double solver_leg_length = MIN_LEG_LENGTH + MAX_LEG_LENGTH - visual_leg_length;
+    const double l0_pitch = INIT_L0_PITCH;
+    const double phi0 = M_PI_2 + l0_pitch;
+    double phi1_phi4[2] = {0.0, 0.0};
+
+    if (!calc_phi1_phi4(phi0, solver_leg_length, phi1_phi4))
+    {
+        fprintf(stderr, "Failed to calculate pos_debug initial pose.\n");
+        exit(2);
+    }
+
+    joint_qpos[0] = -sim_theta_transform(phi1_phi4[1], -J0_ANGLE_OFFSET, J0_DIRECTION);
+    joint_qpos[1] = -sim_theta_transform(phi1_phi4[0], -J1_ANGLE_OFFSET, J1_DIRECTION);
+    joint_qpos[2] = -sim_theta_transform(phi1_phi4[0], -J2_ANGLE_OFFSET, J2_DIRECTION);
+    joint_qpos[3] = -sim_theta_transform(phi1_phi4[1], -J3_ANGLE_OFFSET, J3_DIRECTION);
+}
+
 static void zero_fixed_velocities(const mjModel *m, mjData *d, const ModelMap *map)
 {
     int base_qvel = m->jnt_dofadr[map->base_freejoint];
@@ -235,13 +290,34 @@ static void relax_closed_chain_pose(mjModel *m, mjData *d, const ModelMap *map)
     mj_forward(m, d);
 }
 
-static void set_initial_stand_pose(mjModel *m, mjData *d, const ModelMap *map)
+static void set_initial_stand_pose(mjModel *m, mjData *d, const ModelMap *map, int freeze_init, const char *init_key_name)
 {
-    const mjtNum base_pos[3] = {0.0, 0.0, 0.42};
+    const mjtNum base_pos[3] = {0.0, 0.0, freeze_init ? 0.55 : 0.42};
     const mjtNum base_quat[4] = {1.0, 0.0, 0.0, 0.0};
-    const mjtNum joint_qpos[4] = {-0.422, 0.422, 0.422, -0.422};
+    mjtNum joint_qpos[4];
     int base_qpos = m->jnt_qposadr[map->base_freejoint];
     int base_qvel = m->jnt_dofadr[map->base_freejoint];
+
+    calc_pos_debug_initial_joint_qpos(joint_qpos);
+
+    const int init_key = find_optional_id(m, mjOBJ_KEY, init_key_name);
+    if (init_key >= 0)
+    {
+        mj_resetDataKeyframe(m, d, init_key);
+        for (int i = 0; i < 4; ++i)
+        {
+            d->qpos[map->joint[i].qpos] = joint_qpos[i];
+        }
+        memset(d->qvel, 0, sizeof(mjtNum) * m->nv);
+        memset(d->ctrl, 0, sizeof(mjtNum) * m->nu);
+        mj_forward(m, d);
+
+        if (freeze_init)
+        {
+            return;
+        }
+        goto adjust_wheel_height;
+    }
 
     for (int i = 0; i < 3; ++i)
     {
@@ -270,6 +346,12 @@ static void set_initial_stand_pose(mjModel *m, mjData *d, const ModelMap *map)
     mj_forward(m, d);
     relax_closed_chain_pose(m, d, map);
 
+    if (freeze_init)
+    {
+        return;
+    }
+
+adjust_wheel_height:
     int wheel_bodies[4] = {
         find_optional_id(m, mjOBJ_BODY, "left_wheel"),
         find_optional_id(m, mjOBJ_BODY, "right_wheel"),
@@ -470,8 +552,14 @@ static void step_controller(const mjModel *m, mjData *d, const ModelMap *map, in
     }
 }
 
-static int run_headless(const mjModel *m, mjData *d, const ModelMap *map, double sim_time, int zero_control, int zero_wheels, int invert_right_joints)
+static int run_headless(const mjModel *m, mjData *d, const ModelMap *map, double sim_time, int zero_control, int zero_wheels, int invert_right_joints, int freeze_init)
 {
+    if (freeze_init)
+    {
+        printf("Initial state frozen at t=%6.3f\n", d->time);
+        return 0;
+    }
+
     int steps = (int)(sim_time / m->opt.timestep);
     for (int i = 0; i < steps; ++i)
     {
@@ -481,7 +569,7 @@ static int run_headless(const mjModel *m, mjData *d, const ModelMap *map, double
     return 0;
 }
 
-static int run_viewer(mjModel *m, mjData *d, const ModelMap *map, double sim_time, int zero_control, int zero_wheels, int invert_right_joints)
+static int run_viewer(mjModel *m, mjData *d, const ModelMap *map, double sim_time, int zero_control, int zero_wheels, int invert_right_joints, int freeze_init)
 {
     if (!glfwInit())
     {
@@ -531,7 +619,7 @@ static int run_viewer(mjModel *m, mjData *d, const ModelMap *map, double sim_tim
         double elapsed = glfwGetTime() - wall_start;
         double target_time = sim_start + elapsed;
 
-        while (d->time < target_time && !glfwWindowShouldClose(window))
+        while (!freeze_init && d->time < target_time && !glfwWindowShouldClose(window))
         {
             step_controller(m, d, map, print_tick % 500 == 0, zero_control, zero_wheels, invert_right_joints);
             ++print_tick;
@@ -561,6 +649,8 @@ int main(int argc, char **argv)
     int zero_control = 0;
     int zero_wheels = 0;
     int invert_right_joints = 0;
+    int freeze_init = 0;
+    const char *init_key_name = "pos_debug_hang";
     for (int i = 1; i < argc; ++i)
     {
         if (strcmp(argv[i], "--headless") == 0)
@@ -578,6 +668,22 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--invert-right-joints") == 0)
         {
             invert_right_joints = 1;
+        }
+        else if (strcmp(argv[i], "--freeze-init") == 0)
+        {
+            freeze_init = 1;
+        }
+        else if (strcmp(argv[i], "--init-key") == 0 && i + 1 < argc)
+        {
+            init_key_name = argv[++i];
+        }
+        else if (strcmp(argv[i], "--hang-init") == 0)
+        {
+            init_key_name = "pos_debug_hang";
+        }
+        else if (strcmp(argv[i], "--ground-init") == 0)
+        {
+            init_key_name = "pos_debug_ground";
         }
         else
         {
@@ -604,11 +710,11 @@ int main(int argc, char **argv)
 
     ModelMap map;
     build_model_map(m, &map);
-    set_initial_stand_pose(m, d, &map);
+    set_initial_stand_pose(m, d, &map, freeze_init, init_key_name);
     SimController_Init();
 
     double sim_time = 100.0;
-    int result = headless ? run_headless(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints) : run_viewer(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints);
+    int result = headless ? run_headless(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init) : run_viewer(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init);
 
     mj_deleteData(d);
     mj_deleteModel(m);

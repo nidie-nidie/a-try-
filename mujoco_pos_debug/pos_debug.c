@@ -65,9 +65,20 @@ static double wrap_pi(double value)
     return value;
 }
 
-static double theta_transform(double angle, double dangle, double direction)
+static double theta_transform(double angle, double dangle, int direction, unsigned int duration)
 {
-    return wrap_pi((angle + dangle) * direction);
+    double value = (angle + dangle) * (double)direction;
+    const double limit = kPi * (double)duration;
+
+    while (value > limit)
+    {
+        value -= 2.0 * limit;
+    }
+    while (value < -limit)
+    {
+        value += 2.0 * limit;
+    }
+    return value;
 }
 
 static int find_required_id(const mjModel *m, int type, const char *name)
@@ -151,6 +162,12 @@ static void build_model_map(const mjModel *m, ModelMap *map)
     exit(2);
 }
 
+static int is_closed_chain_model(const mjModel *m)
+{
+    return find_optional_id(m, mjOBJ_JOINT, "jBE") >= 0 &&
+           find_optional_id(m, mjOBJ_JOINT, "jJM") >= 0;
+}
+
 static void widen_active_joint_ranges(mjModel *m, const ModelMap *map)
 {
     for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
@@ -209,6 +226,142 @@ static void print_model_map(const mjModel *m, const ModelMap *map)
     printf("\n");
 }
 
+static void zero_fixed_velocities(const mjModel *m, mjData *d, const ModelMap *map)
+{
+    int base_qvel = m->jnt_dofadr[map->base_freejoint];
+    for (int i = 0; i < POS_DEBUG_BASE_QVEL_SIZE; ++i)
+    {
+        d->qvel[base_qvel + i] = 0.0;
+    }
+
+    for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
+    {
+        d->qvel[map->joint[i].qvel] = 0.0;
+    }
+}
+
+static double closed_chain_site_cost(const mjModel *m, mjData *d)
+{
+    const char *site_pairs[][2] = {
+        {"EC-D", "AG-D"},
+        {"CF-F", "GH-F"},
+        {"IO-L", "MK-L"},
+        {"OP-N", "KN-N"},
+    };
+    double cost = 0.0;
+
+    mj_forward(m, d);
+    for (int i = 0; i < 4; ++i)
+    {
+        int site1 = mj_name2id(m, mjOBJ_SITE, site_pairs[i][0]);
+        int site2 = mj_name2id(m, mjOBJ_SITE, site_pairs[i][1]);
+        if (site1 >= 0 && site2 >= 0)
+        {
+            const mjtNum *p1 = &d->site_xpos[3 * site1];
+            const mjtNum *p2 = &d->site_xpos[3 * site2];
+            const double dx = p1[0] - p2[0];
+            const double dy = p1[1] - p2[1];
+            const double dz = p1[2] - p2[2];
+            cost += dx * dx + dy * dy + dz * dz;
+        }
+    }
+    return cost;
+}
+
+static int append_passive_qpos(const mjModel *m, const char *joint_name, int qpos_adr[], int count, int max_count)
+{
+    int joint_id = find_optional_id(m, mjOBJ_JOINT, joint_name);
+    if (joint_id >= 0 && count < max_count)
+    {
+        qpos_adr[count++] = m->jnt_qposadr[joint_id];
+    }
+    return count;
+}
+
+static void relax_closed_chain_pose(mjModel *m, mjData *d, const ModelMap *map)
+{
+    if (!is_closed_chain_model(m))
+    {
+        return;
+    }
+
+    int base_qpos = m->jnt_qposadr[map->base_freejoint];
+    mjtNum base_pose[POS_DEBUG_BASE_QPOS_SIZE];
+    mjtNum joint_pose[POS_DEBUG_LEG_JOINT_COUNT];
+    int passive_qpos[8];
+    int passive_count = 0;
+
+    for (int i = 0; i < POS_DEBUG_BASE_QPOS_SIZE; ++i)
+    {
+        base_pose[i] = d->qpos[base_qpos + i];
+    }
+    for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
+    {
+        joint_pose[i] = d->qpos[map->joint[i].qpos];
+    }
+
+    passive_count = append_passive_qpos(m, "jGH", passive_qpos, passive_count, 8);
+    passive_count = append_passive_qpos(m, "jBE", passive_qpos, passive_count, 8);
+    passive_count = append_passive_qpos(m, "jEC", passive_qpos, passive_count, 8);
+    passive_count = append_passive_qpos(m, "jCF", passive_qpos, passive_count, 8);
+    passive_count = append_passive_qpos(m, "jJM", passive_qpos, passive_count, 8);
+    passive_count = append_passive_qpos(m, "jMK", passive_qpos, passive_count, 8);
+    passive_count = append_passive_qpos(m, "jKN", passive_qpos, passive_count, 8);
+    passive_count = append_passive_qpos(m, "jOP", passive_qpos, passive_count, 8);
+
+    double best_cost = closed_chain_site_cost(m, d);
+    for (double step = 1.0; step > 1.0e-7;)
+    {
+        int improved = 0;
+
+        for (int var = 0; var < passive_count; ++var)
+        {
+            const int qadr = passive_qpos[var];
+            const double original = d->qpos[qadr];
+            double best_value = original;
+
+            for (int sign = -1; sign <= 1; sign += 2)
+            {
+                d->qpos[qadr] = original + (double)sign * step;
+                for (int i = 0; i < POS_DEBUG_BASE_QPOS_SIZE; ++i)
+                {
+                    d->qpos[base_qpos + i] = base_pose[i];
+                }
+                for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
+                {
+                    d->qpos[map->joint[i].qpos] = joint_pose[i];
+                }
+
+                const double cost = closed_chain_site_cost(m, d);
+                if (cost < best_cost)
+                {
+                    best_cost = cost;
+                    best_value = d->qpos[qadr];
+                    improved = 1;
+                }
+            }
+            d->qpos[qadr] = best_value;
+        }
+
+        if (!improved)
+        {
+            step *= 0.5;
+        }
+    }
+
+    for (int i = 0; i < POS_DEBUG_BASE_QPOS_SIZE; ++i)
+    {
+        d->qpos[base_qpos + i] = base_pose[i];
+    }
+    for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
+    {
+        d->qpos[map->joint[i].qpos] = joint_pose[i];
+    }
+    memset(d->qvel, 0, sizeof(mjtNum) * m->nv);
+    memset(d->ctrl, 0, sizeof(mjtNum) * m->nu);
+    mj_forward(m, d);
+}
+
 static void save_hang_pose(const mjModel *m, mjData *d, const ModelMap *map, PosDebugState *state)
 {
     int base_qpos = m->jnt_qposadr[map->base_freejoint];
@@ -242,45 +395,48 @@ static void hold_base_pose(const mjModel *m, mjData *d, const ModelMap *map, con
     }
 }
 
-static int calc_phi1_phi4(double phi0, double leg_length, double phi1_phi4[2])
+static void calc_phi1_phi4(double phi0, double leg_length, double phi1_phi4[2])
 {
-    const double cos_beta1 = (kLegL1 * kLegL1 + leg_length * leg_length - kLegL2 * kLegL2) / (2.0 * kLegL1 * leg_length);
-    const double cos_beta2 = (kLegL4 * kLegL4 + leg_length * leg_length - kLegL3 * kLegL3) / (2.0 * kLegL4 * leg_length);
+    double cos_beta1;
+    double cos_beta2;
+    double beta1;
+    double beta2;
 
-    if (cos_beta1 < -1.0 || cos_beta1 > 1.0 || cos_beta2 < -1.0 || cos_beta2 > 1.0)
-    {
-        return 0;
-    }
+    cos_beta1 = (kLegL1 * kLegL1 + leg_length * leg_length - kLegL2 * kLegL2) / (2.0 * kLegL1 * leg_length);
+    cos_beta2 = (kLegL4 * kLegL4 + leg_length * leg_length - kLegL3 * kLegL3) / (2.0 * kLegL4 * leg_length);
+    beta1 = acos(cos_beta1);
+    beta2 = acos(cos_beta2);
 
-    phi1_phi4[0] = phi0 + acos(cos_beta1);
-    phi1_phi4[1] = phi0 - acos(cos_beta2);
-    return 1;
+    phi1_phi4[0] = phi0 + beta1;
+    phi1_phi4[1] = phi0 - beta2;
 }
 
 static void solve_left_leg_targets(PosDebugState *state)
 {
     double left_phi[2] = {0.0, 0.0};
 
-    if (!calc_phi1_phi4(kPi / 2.0 + state->left_l0_pitch, state->left_leg_length, left_phi))
+    calc_phi1_phi4(kPi / 2.0 + state->left_l0_pitch, state->left_leg_length, left_phi);
+    if (isnan(left_phi[0]) || isnan(left_phi[1]))
     {
         return;
     }
 
-    state->target[JOINT_LEFT_REAR] = -theta_transform(left_phi[1], -kJ0Offset, 1.0);
-    state->target[JOINT_LEFT_FRONT] = -theta_transform(left_phi[0], -kJ1Offset, 1.0);
+    state->target[JOINT_LEFT_REAR] = -theta_transform(left_phi[1], -kJ0Offset, kJ0Direction, 1);
+    state->target[JOINT_LEFT_FRONT] = -theta_transform(left_phi[0], -kJ1Offset, kJ1Direction, 1);
 }
 
 static void solve_right_leg_targets(PosDebugState *state)
 {
     double right_phi[2] = {0.0, 0.0};
 
-    if (!calc_phi1_phi4(kPi / 2.0 + state->right_l0_pitch, state->right_leg_length, right_phi))
+    calc_phi1_phi4(kPi / 2.0 + state->right_l0_pitch, state->right_leg_length, right_phi);
+    if (isnan(right_phi[0]) || isnan(right_phi[1]))
     {
         return;
     }
 
-    state->target[JOINT_RIGHT_FRONT] = -theta_transform(right_phi[0], -kJ2Offset, 1.0);
-    state->target[JOINT_RIGHT_REAR] = -theta_transform(right_phi[1], -kJ3Offset, 1.0);
+    state->target[JOINT_RIGHT_FRONT] = -theta_transform(right_phi[0], -kJ2Offset, kJ2Direction, 1);
+    state->target[JOINT_RIGHT_REAR] = -theta_transform(right_phi[1], -kJ3Offset, kJ3Direction, 1);
 }
 
 static void solve_targets(PosDebugState *state)
@@ -362,7 +518,7 @@ static void print_control_result(const mjModel *m, const mjData *d, const ModelM
     const double measured_left = measure_leg_length(m, d, map, 1);
     const double measured_right = measure_leg_length(m, d, map, 0);
 
-    printf("t=%7.3f | input=%s | visual command L=% .3f R=% .3f | solver L0 L=% .3f R=% .3f | l0 pitch L=% .3f R=% .3f | measured leg L=% .3f R=% .3f | "
+    printf("t=%7.3f | input=%s | leg_set L=% .3f R=% .3f | solver L0 L=% .3f R=% .3f | phi0 pitch L=% .3f R=% .3f | measured leg L=% .3f R=% .3f | "
            "target LR/LF/RF/RR=[% .3f % .3f % .3f % .3f] | "
            "q=[% .3f % .3f % .3f % .3f] | "
            "tau=[% .2f % .2f % .2f % .2f]\n",
@@ -391,9 +547,31 @@ static void print_control_result(const mjModel *m, const mjData *d, const ModelM
     fflush(stdout);
 }
 
-static void set_initial_target_pose(const mjModel *m, mjData *d, const ModelMap *map, PosDebugState *state)
+static void set_initial_target_pose(mjModel *m, mjData *d, const ModelMap *map, PosDebugState *state)
 {
     solve_targets(state);
+
+    const int init_key = find_optional_id(m, mjOBJ_KEY, state->init_key_name);
+    if (init_key >= 0)
+    {
+        int base_qpos = m->jnt_qposadr[map->base_freejoint];
+        mj_resetDataKeyframe(m, d, init_key);
+
+        for (int i = 0; i < POS_DEBUG_BASE_QPOS_SIZE; ++i)
+        {
+            state->saved_base_qpos[i] = d->qpos[base_qpos + i];
+        }
+        for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
+        {
+            d->qpos[map->joint[i].qpos] = state->target[i];
+        }
+        memset(d->qvel, 0, sizeof(mjtNum) * m->nv);
+        memset(d->ctrl, 0, sizeof(mjtNum) * m->nu);
+        mj_forward(m, d);
+        relax_closed_chain_pose(m, d, map);
+        return;
+    }
+
     hold_base_pose(m, d, map, state);
 
     for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
@@ -413,11 +591,12 @@ static void set_initial_target_pose(const mjModel *m, mjData *d, const ModelMap 
     }
 
     mj_forward(m, d);
+    relax_closed_chain_pose(m, d, map);
 }
 
 static void print_initial_pose(const mjData *d, const ModelMap *map, const PosDebugState *state)
 {
-    printf("Initial left leg:  visual=% .3f solver_L0=% .3f l0_pitch=% .3f q=[% .3f % .3f] target=[% .3f % .3f]\n",
+    printf("Initial left leg:  leg_set=% .3f solver_L0=% .3f phi0_pitch=% .3f q=[% .3f % .3f] target=[% .3f % .3f]\n",
            state->visual_left_leg_length,
            state->left_leg_length,
            state->left_l0_pitch,
@@ -425,7 +604,7 @@ static void print_initial_pose(const mjData *d, const ModelMap *map, const PosDe
            d->qpos[map->joint[JOINT_LEFT_FRONT].qpos],
            state->target[JOINT_LEFT_REAR],
            state->target[JOINT_LEFT_FRONT]);
-    printf("Initial right leg: visual=% .3f solver_L0=% .3f l0_pitch=% .3f q=[% .3f % .3f] target=[% .3f % .3f]\n",
+    printf("Initial right leg: leg_set=% .3f solver_L0=% .3f phi0_pitch=% .3f q=[% .3f % .3f] target=[% .3f % .3f]\n",
            state->visual_right_leg_length,
            state->right_leg_length,
            state->right_l0_pitch,
@@ -433,6 +612,67 @@ static void print_initial_pose(const mjData *d, const ModelMap *map, const PosDe
            d->qpos[map->joint[JOINT_RIGHT_REAR].qpos],
            state->target[JOINT_RIGHT_FRONT],
            state->target[JOINT_RIGHT_REAR]);
+}
+
+static int joint_qpos_size(int joint_type)
+{
+    if (joint_type == mjJNT_FREE)
+    {
+        return 7;
+    }
+    if (joint_type == mjJNT_BALL)
+    {
+        return 4;
+    }
+    return 1;
+}
+
+static void print_qpos_dump(const mjModel *m, const mjData *d)
+{
+    printf("\nInitial qpos dump:\n");
+    printf("  nq=%d\n", m->nq);
+    printf("  keyframe qpos=\"");
+    for (int i = 0; i < m->nq; ++i)
+    {
+        printf("%s%.9f", i == 0 ? "" : " ", d->qpos[i]);
+    }
+    printf("\"\n");
+
+    for (int i = 0; i < m->njnt; ++i)
+    {
+        const char *name = mj_id2name(m, mjOBJ_JOINT, i);
+        const int qadr = m->jnt_qposadr[i];
+        const int qsize = joint_qpos_size(m->jnt_type[i]);
+
+        printf("  joint %-16s qpos[%02d]", name ? name : "(null)", qadr);
+        for (int j = 0; j < qsize; ++j)
+        {
+            printf(" % .9f", d->qpos[qadr + j]);
+        }
+        printf("\n");
+    }
+
+    const char *site_pairs[][2] = {
+        {"EC-D", "AG-D"},
+        {"CF-F", "GH-F"},
+        {"IO-L", "MK-L"},
+        {"OP-N", "KN-N"},
+    };
+    printf("  equality site residuals:\n");
+    for (int i = 0; i < 4; ++i)
+    {
+        int site1 = mj_name2id(m, mjOBJ_SITE, site_pairs[i][0]);
+        int site2 = mj_name2id(m, mjOBJ_SITE, site_pairs[i][1]);
+        if (site1 >= 0 && site2 >= 0)
+        {
+            const mjtNum *p1 = &d->site_xpos[3 * site1];
+            const mjtNum *p2 = &d->site_xpos[3 * site2];
+            const double dx = p1[0] - p2[0];
+            const double dy = p1[1] - p2[1];
+            const double dz = p1[2] - p2[2];
+            printf("    %-4s-%-4s %.9f\n", site_pairs[i][0], site_pairs[i][1], sqrt(dx * dx + dy * dy + dz * dz));
+        }
+    }
 }
 
 
@@ -451,8 +691,8 @@ static void update_keyboard_command(GLFWwindow *window, PosDebugState *state)
 
     if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
     {
-        state->visual_left_leg_length = kResetVisualLegLength;
-        state->visual_right_leg_length = kResetVisualLegLength;
+        state->visual_left_leg_length = kResetLegSet;
+        state->visual_right_leg_length = kResetLegSet;
         state->left_l0_pitch = kResetL0Pitch;
         state->right_l0_pitch = kResetL0Pitch;
         append_input_command(state, "R reset");
@@ -622,8 +862,8 @@ static void draw_overlay(mjrRect viewport, const PosDebugState *state)
              "Esc quit");
 
     snprintf(right, sizeof(right),
-             "left visual=% .3f solver_L0=% .3f pitch=% .3f target=[% .3f % .3f]\n"
-             "right visual=% .3f solver_L0=% .3f pitch=% .3f target=[% .3f % .3f]\n"
+             "left leg_set=% .3f solver_L0=% .3f pitch=% .3f target=[% .3f % .3f]\n"
+             "right leg_set=% .3f solver_L0=% .3f pitch=% .3f target=[% .3f % .3f]\n"
              "kp=% .1f kd=% .1f max_tau=% .1f\n"
              "base held at z=% .2f",
              state->visual_left_leg_length,
@@ -758,6 +998,7 @@ int main(int argc, char **argv)
 {
     const char *model_path = kDefaultModelPath;
     int headless = 0;
+    int dump_qpos = 0;
     double sim_time = kDefaultSimTime;
 
     PosDebugState state;
@@ -769,12 +1010,13 @@ int main(int argc, char **argv)
     state.max_leg_length = kDefaultMaxLegLength;
     state.min_l0_pitch = kDefaultMinL0Pitch;
     state.max_l0_pitch = kDefaultMaxL0Pitch;
-    state.visual_left_leg_length = kDefaultVisualLegLength;
-    state.visual_right_leg_length = kDefaultVisualLegLength;
+    state.visual_left_leg_length = kDefaultLegSet;
+    state.visual_right_leg_length = kDefaultLegSet;
     state.left_l0_pitch = kDefaultL0Pitch;
     state.right_l0_pitch = kDefaultL0Pitch;
     state.hang_z = kDefaultHangZ;
     state.print_period = kDefaultPrintPeriod;
+    snprintf(state.init_key_name, sizeof(state.init_key_name), "%s", kDefaultInitKeyName);
     clear_input_command(&state);
 
 
@@ -813,6 +1055,22 @@ int main(int argc, char **argv)
         {
             state.print_period = 0.0;
         }
+        else if (strcmp(argv[i], "--init-key") == 0 && i + 1 < argc)
+        {
+            snprintf(state.init_key_name, sizeof(state.init_key_name), "%s", argv[++i]);
+        }
+        else if (strcmp(argv[i], "--hang-init") == 0)
+        {
+            snprintf(state.init_key_name, sizeof(state.init_key_name), "%s", "pos_debug_hang");
+        }
+        else if (strcmp(argv[i], "--ground-init") == 0)
+        {
+            snprintf(state.init_key_name, sizeof(state.init_key_name), "%s", "pos_debug_ground");
+        }
+        else if (strcmp(argv[i], "--dump-qpos") == 0)
+        {
+            dump_qpos = 1;
+        }
         else
         {
             model_path = argv[i];
@@ -847,8 +1105,17 @@ int main(int argc, char **argv)
     printf("Both legs: Up extend, Down retract. L0 pitch: A/D both, Q/E left, Z/C right.\n");
     printf("R reset pose, Esc quit.\n");
     print_initial_pose(d, &map, &state);
+    if (dump_qpos)
+    {
+        print_qpos_dump(m, d);
+    }
 
     int result = headless ? run_headless(m, d, &map, &state, sim_time) : run_viewer(m, d, &map, &state);
+    if (dump_qpos)
+    {
+        printf("\nFinal state after run:\n");
+        print_qpos_dump(m, d);
+    }
 
     mj_deleteData(d);
     mj_deleteModel(m);

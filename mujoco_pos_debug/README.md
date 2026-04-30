@@ -13,7 +13,12 @@
 - 对四个腿部主动关节做纯软件 PD 位控
 - 用键盘分别控制左腿、右腿伸缩
 
-## Build
+
+
+
+
+## 命令行
+### Build
 
 ```bash
 cd /home/shun/MuJoCoBin/rm_control
@@ -21,11 +26,32 @@ env MUJOCO_ROOT=/home/shun/MuJoCoBin/mujoco-3.3.0 cmake -S mujoco_pos_debug -B b
 cmake --build build_pos_debug -j
 ```
 
-## Run
+### Run
 
 ```bash
 /home/shun/MuJoCoBin/rm_control/build_pos_debug/pos_debug /home/shun/MuJoCoBin/rm_control/MJCF/env.xml
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 如果不传 XML，默认也会加载：
 
@@ -36,15 +62,15 @@ cmake --build build_pos_debug -j
 运行时终端会周期性打印控制链路：
 
 ```text
-input -> visual command L/R -> solver L0 L/R -> l0 pitch L/R -> measured leg L/R -> target LR/LF/RF/RR -> q LR/LF/RF/RR -> tau LR/LF/RF/RR
+input -> leg_set L/R -> solver L0 L/R -> phi0 pitch L/R -> measured leg L/R -> target LR/LF/RF/RR -> q LR/LF/RF/RR -> tau LR/LF/RF/RR
 ```
 
 其中：
 
 - `input`：当前按下的键位指令，例如 `UP both extend`、`J left retract`
-- `visual command L/R`：键盘控制后的视觉腿长目标，伸腿时变大，缩腿时变小
-- `solver L0 L/R`：内部送进 VMC 逆解的 L0，和视觉腿长反向转换
-- `l0 pitch L/R`：内部送进 `CalcPhi1AndPhi4()` 的 `phi0` 偏置量，实际使用 `phi0 = pi/2 + l0_pitch`
+- `leg_set L/R`：和 `mujoco_control_extract` 里的 `chassis_move.leg_set` 同义，键盘控制后的腿长命令
+- `solver L0 L/R`：和 `ConsoleStandUp()` 一样，用 `MIN_LEG_LENGTH + MAX_LEG_LENGTH - leg_set` 送进逆解
+- `phi0 pitch L/R`：和 `INIT_L0_PITCH` 同义，实际使用 `phi0 = pi/2 + phi0_pitch`
 - `measured leg L/R`：MuJoCo 中从髋部中点到轮子 body 的实测距离，用来和视觉动作对照
 - `target`：腿长逆解得到的四个主动关节目标角
 - `q`：MuJoCo 当前四个主动关节角
@@ -75,11 +101,11 @@ R      左右腿目标回到初始腿长和 pitch
 Esc    退出
 ```
 
-注意：当前 MJCF 里视觉腿长和逆解用的 `solver L0` 是反向的，所以调试器对外用 `visual command`，内部再转换成 `solver L0`。
+注意：这里的变量语义刻意对齐 `mujoco_control_extract`，也就是 `pos_debug` 里显示和按键调的 `leg_set` 可以直接迁移到 `chassis_move.leg_set`。
 
 ```text
-视觉伸腿 -> visual command 变大 -> solver L0 变小
-视觉缩腿 -> visual command 变小 -> solver L0 变大
+leg_set 变大 -> solver L0 变小
+leg_set 变小 -> solver L0 变大
 ```
 
 这个模式下 `ctrl` 仍写入 MuJoCo actuator，但数值完全由位置误差算出：
@@ -93,13 +119,13 @@ tau = kp * (q_target - q_now) - kd * qvel
 左腿单独控制：
 
 ```text
-visual_left_leg_length
+left leg_set
     ↓
-solver_L0 = min_leg_length + max_leg_length - visual_left_leg_length
+solver_L0 = MIN_LEG_LENGTH + MAX_LEG_LENGTH - leg_set
     ↓
-l0_phi0 = pi/2 + left_l0_pitch
+phi0 = pi/2 + left_phi0_pitch
     ↓
-CalcPhi1AndPhi4(l0_phi0, solver_L0)
+CalcPhi1AndPhi4(phi0, solver_L0)
     ↓
 left rear target = -theta_transform(phi4, -J0_OFFSET)
 left front target = -theta_transform(phi1, -J1_OFFSET)
@@ -110,13 +136,13 @@ left tau = kp * (left target - left q) - kd * left qvel
 右腿单独控制：
 
 ```text
-visual_right_leg_length
+right leg_set
     ↓
-solver_L0 = min_leg_length + max_leg_length - visual_right_leg_length
+solver_L0 = MIN_LEG_LENGTH + MAX_LEG_LENGTH - leg_set
     ↓
-l0_phi0 = pi/2 + right_l0_pitch
+phi0 = pi/2 + right_phi0_pitch
     ↓
-CalcPhi1AndPhi4(l0_phi0, solver_L0)
+CalcPhi1AndPhi4(phi0, solver_L0)
     ↓
 right front target = -theta_transform(phi1, -J2_OFFSET)
 right rear target = -theta_transform(phi4, -J3_OFFSET)
@@ -137,9 +163,9 @@ pos_debug.c
     set_initial_target_pose()
 ```
 
-- `visual_left_leg_length` / `visual_right_leg_length`：对外显示和键盘控制的视觉腿长
-- `left_leg_length` / `right_leg_length`：内部送进 VMC 逆解的 solver L0
-- `left_l0_pitch` / `right_l0_pitch`：内部送进 VMC 逆解的 `phi0` 偏置量，默认限制在 `[-0.60, 0.60] rad`
+- `visual_left_leg_length` / `visual_right_leg_length`：历史字段名，现在语义等同于 `control_extract` 的 `leg_set`
+- `left_leg_length` / `right_leg_length`：内部送进 VMC 逆解的 solver L0，计算方式和 `ConsoleStandUp()` 一致
+- `left_l0_pitch` / `right_l0_pitch`：内部送进 VMC 逆解的 `phi0` 偏置量，默认值和 `INIT_L0_PITCH` 一致
 - `solve_left_leg_targets()`：左腿腿长到左后/左前主动关节角的映射
 - `solve_right_leg_targets()`：右腿腿长到右前/右后主动关节角的映射
 - `set_initial_target_pose()`：启动第一帧前直接把四个主动关节放到目标角

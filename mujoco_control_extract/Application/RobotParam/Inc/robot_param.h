@@ -61,6 +61,7 @@
 
 #define INIT_LEG_LENGTH (0.2f) // (m)底盘初始腿长, 测试0.12-0.14比较合适
 // #define INIT_LEG_LENGTH (0.20f) // (m)底盘初始腿长
+#define INIT_L0_PITCH (0.700f) // (rad)对齐 pos_debug 的初始虚拟腿 pitch
 #define INIT_ROLL (0.0f) // (rad)底盘初始滚转角
 
 // physical parameters ---------------------
