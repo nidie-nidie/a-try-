@@ -1,2 +1,30 @@
 # Windows alternate data stream metadata copied into WSL/Linux.
 *:Zone.Identifier
+
+# Build directories and CMake output.
+build/
+build_*/
+build-*/
+cmake-build-*/
+**/build/
+**/build_*/
+**/build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Compiled artifacts.
+*.o
+*.o.d
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+a.out
+
+# MuJoCo generated runtime files.
+mujoco_control_extract/MUJOCO_LOG.TXT
+mujoco_control_extract/mjmodel.xml
+build_pos_debug/

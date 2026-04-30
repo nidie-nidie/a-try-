@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/mujoco_bridge.dir/main_mujoco.c.o -o mujoco_bridge   -L/home/shun/MuJoCoBin/mujoco-3.3.0/lib  -Wl,-rpath,/home/shun/MuJoCoBin/mujoco-3.3.0/lib librm_controller.a -lm /usr/lib/x86_64-linux-gnu/libglfw.so.3.3 -lmujoco /usr/lib/x86_64-linux-gnu/libGLX.so /usr/lib/x86_64-linux-gnu/libOpenGL.so 
