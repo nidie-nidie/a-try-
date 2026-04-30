@@ -25,6 +25,7 @@ compile_commands.json
 a.out
 
 # MuJoCo generated runtime files.
+mujoco_control_extract/build
 mujoco_control_extract/MUJOCO_LOG.TXT
 mujoco_control_extract/mjmodel.xml
 build_pos_debug/
