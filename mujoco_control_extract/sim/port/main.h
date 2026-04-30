@@ -37,5 +37,7 @@ typedef float fp32;
 #define __PACKED_STRUCT struct __attribute__((packed))
 #endif
 
+uint32_t HAL_GetTick(void);
+
 #endif
 

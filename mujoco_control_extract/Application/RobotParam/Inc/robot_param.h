@@ -87,7 +87,6 @@
 #define J1_DIRECTION (1)
 #define J2_DIRECTION (1)
 #define J3_DIRECTION (1)
-
 #define W0_DIRECTION (1)
 #define W1_DIRECTION (1)
 
@@ -97,8 +96,6 @@
 #define WHEEL_BASE (0.48f)  // (m)驱动轮轴距，即左右轮之间的默认距离
 
 // 机器人物理参数
-// #define BODY_MASS (10.0f)                   // (kg)机身重量
-
 #define BODY_GRAVITY (BODY_MASS * GRAVITY) // (N)机身重力
 
 // 底盘校准相关参数
