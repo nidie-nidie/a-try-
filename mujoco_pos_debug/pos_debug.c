@@ -20,6 +20,10 @@ static int g_button_right = 0;
 static double g_last_x = 0.0;
 static double g_last_y = 0.0;
 
+
+
+
+// 保证值不溢出
 static double clamp(double value, double min_value, double max_value)
 {
     if (value < min_value)
@@ -33,6 +37,11 @@ static double clamp(double value, double min_value, double max_value)
     return value;
 }
 
+
+
+
+
+// 说明键盘输入的字符串。
 static void clear_input_command(PosDebugState *state)
 {
     snprintf(state->input_command, sizeof(state->input_command), "none");
@@ -40,17 +49,27 @@ static void clear_input_command(PosDebugState *state)
 
 static void append_input_command(PosDebugState *state, const char *command)
 {
+
     if (strcmp(state->input_command, "none") == 0)
+
     {
         state->input_command[0] = '\0';
     }
 
     if (state->input_command[0] != '\0')
+
     {
         strncat(state->input_command, " + ", sizeof(state->input_command) - strlen(state->input_command) - 1);
     }
+
+// 把新的命令文字接到末尾。
     strncat(state->input_command, command, sizeof(state->input_command) - strlen(state->input_command) - 1);
 }
+
+
+
+
+
 
 static double wrap_pi(double value)
 {
@@ -295,6 +314,7 @@ static void relax_closed_chain_pose(mjModel *m, mjData *d, const ModelMap *map)
     {
         base_pose[i] = d->qpos[base_qpos + i];
     }
+    
     for (int i = 0; i < POS_DEBUG_LEG_JOINT_COUNT; ++i)
     {
         joint_pose[i] = d->qpos[map->joint[i].qpos];

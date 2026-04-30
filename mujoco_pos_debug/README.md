@@ -14,9 +14,6 @@
 - 用键盘分别控制左腿、右腿伸缩
 
 
-
-
-
 ## 命令行
 ### Build
 
@@ -31,6 +28,19 @@ cmake --build build_pos_debug -j
 ```bash
 /home/shun/MuJoCoBin/rm_control/build_pos_debug/pos_debug /home/shun/MuJoCoBin/rm_control/MJCF/env.xml
 ```
+
+
+悬空初始姿态，正常仿真：
+./mujoco_control_extract/build/mujoco_bridge --hang-init MJCF/env.xml
+
+落地初始姿态，正常仿真：
+./mujoco_control_extract/build/mujoco_bridge --ground-init MJCF/env.xml
+
+只冻结初始姿态，不跑仿真：
+./mujoco_control_extract/build/mujoco_bridge --freeze-init --hang-init MJCF/env.xml
+
+或者落地冻结：
+./mujoco_control_extract/build/mujoco_bridge --freeze-init --ground-init MJCF/env.xml
 
 
 
