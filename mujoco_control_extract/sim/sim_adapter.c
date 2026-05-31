@@ -1,5 +1,6 @@
 #include "sim_adapter.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "ChassisL_Task.h"
@@ -12,6 +13,7 @@
 extern INS_t INS;
 
 static float sim_dt_s = 0.003f;
+static float sim_stand_l0_pitch = INIT_L0_PITCH;
 
 static float sim_mit_torque(float position_set, float velocity_set, float kp, float kd, float torque_ff,
                             const DM_Motor_Info_Typedef *motor)
@@ -19,6 +21,31 @@ static float sim_mit_torque(float position_set, float velocity_set, float kp, fl
     return kp * (position_set - motor->Data.Position) +
            kd * (velocity_set - motor->Data.Velocity) +
            torque_ff;
+}
+
+static void sim_apply_stand_joint_targets(void)
+{
+    float phi1_phi4_l[2];
+    float phi1_phi4_r[2];
+
+    CalcPhi1AndPhi4(sim_stand_l0_pitch, chassis_move.leg_set, phi1_phi4_l);
+    CalcPhi1AndPhi4(sim_stand_l0_pitch, chassis_move.leg_set, phi1_phi4_r);
+
+    if (isnan(phi1_phi4_l[0]) || isnan(phi1_phi4_l[1]) ||
+        isnan(phi1_phi4_r[0]) || isnan(phi1_phi4_r[1]))
+    {
+        return;
+    }
+
+    left.position_set[0] = -theta_transform(phi1_phi4_l[1], -J0_ANGLE_OFFSET, J0_DIRECTION, 1);
+    left.position_set[1] = -theta_transform(phi1_phi4_l[0], -J1_ANGLE_OFFSET, J1_DIRECTION, 1);
+    right.position_set[0] = -theta_transform(phi1_phi4_r[0], -J2_ANGLE_OFFSET, J2_DIRECTION, 1);
+    right.position_set[1] = -theta_transform(phi1_phi4_r[1], -J3_ANGLE_OFFSET, J3_DIRECTION, 1);
+}
+
+void SimController_SetStandL0Pitch(float l0_pitch)
+{
+    sim_stand_l0_pitch = l0_pitch;
 }
 
 void SimController_Init(void)
@@ -38,6 +65,8 @@ void SimController_Init(void)
     ChassisL_init();
     ChassisR_init();
     Pensation_init();
+    ConsoleStandUp();
+    sim_apply_stand_joint_targets();
 }
 
 void SimController_SetState(const SimControllerState *state)
@@ -101,6 +130,7 @@ void SimController_Step(float dt)
     ChassisL_control_loop();
 
     ChassisConsole();
+    sim_apply_stand_joint_targets();
 }
 
 void SimController_GetOutput(SimControllerOutput *output)
@@ -142,6 +172,8 @@ void SimController_GetOutput(SimControllerOutput *output)
         break;
 
     case CHASSIS_SAFE:
+        // Mirror the real control task: MIT zero pose/velocity targets with
+        // torque feedforward from the VMC output.
         output->joint_torque[0] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[1],
                                                  chassis_move.joint_motor[0]);
         output->joint_torque[1] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[0],
@@ -150,6 +182,8 @@ void SimController_GetOutput(SimControllerOutput *output)
                                                  chassis_move.joint_motor[2]);
         output->joint_torque[3] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -right.torque_set[1],
                                                  chassis_move.joint_motor[3]);
+        output->wheel_torque[0] = left.wheel_T;
+        output->wheel_torque[1] = right.wheel_T;
         break;
 
     case CHASSIS_OFF:
@@ -166,7 +200,6 @@ void SimController_GetOutput(SimControllerOutput *output)
     }
 
     if (chassis_move.mode == CHASSIS_STAND_UP ||
-        chassis_move.mode == CHASSIS_SAFE ||
         chassis_move.mode == CHASSIS_CALIBRATE)
     {
         output->wheel_torque[0] = left.wheel_T;

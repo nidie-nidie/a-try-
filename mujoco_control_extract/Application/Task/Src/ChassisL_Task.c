@@ -139,7 +139,7 @@ void ChassisL_control_loop(void)
 
     LQR_K_calc(left.L0, LQR_K_L); // 根据当前腿长计算lqr控制器的增益
 
-    x_l[0] = X0_OFFSET + (left.theta - 0.0f);                           // theta误差，目标theta是0
+    x_l[0] = X0_OFFSET + (left.theta - INIT_THETA);                     // theta误差，目标theta是初始虚拟腿角对应的平衡点
     x_l[1] = X1_OFFSET + (left.d_theta - 0.0f);                         // theta_dot误差，目标theta_dot是0
     x_l[2] = -X2_OFFSET + (chassis_move.x_set - chassis_move.x_filter); // x误差，目标x是滤波后的x_set
     x_l[3] = -X3_OFFSET + (chassis_move.v_set - chassis_move.v_filter); // x_dot误差，目标x_dot是滤波后的v_set
@@ -220,7 +220,7 @@ void ChassisL_control_loop(void)
         { // 当两腿同时离地并且遥控器没有在控制腿的伸缩时，才认为离地
           // 排除跳跃的压缩阶段和跳跃的缩腿阶段
             left.wheel_T = 0.0f;
-            left.Tp = LQR_K_L[6] * (left.theta - 0.0f) + LQR_K_L[7] * (left.d_theta - 0.0f);
+            left.Tp = LQR_K_L[6] * (left.theta - INIT_THETA) + LQR_K_L[7] * (left.d_theta - 0.0f);
 
             chassis_move.x_filter = 0.0f;
             chassis_move.x_set = chassis_move.x_filter;

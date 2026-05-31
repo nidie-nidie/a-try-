@@ -88,6 +88,9 @@ void UpdateCalibrateStatus(void)
  * @param[in]      none
  * @retval         none
  */
+
+//  底盘的异常处理函数，1. 查看遥控器是否异常或者离线，2. 查看电机的反馈扭矩是否过大，3. 在off或safe模式时清除PID计算历史数据
+
 void ChassisHandleException(void)
 {
     if ((ENABLE_ALARM_RC_OFFLINE && GetRcOffline() || (ENABLE_ALARM_PS2_OFFLINE && ps2_lost)))

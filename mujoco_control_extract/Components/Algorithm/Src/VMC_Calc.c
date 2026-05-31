@@ -29,6 +29,7 @@ void VMC_calc_1(vmc_leg_t *vmc, float Pitch, float PithGyro, float dt) // 计算
 	vmc->A0 = 2 * vmc->l2 * (vmc->XD - vmc->XB);
 	vmc->B0 = 2 * vmc->l2 * (vmc->YD - vmc->YB);
 	vmc->C0 = vmc->l2 * vmc->l2 + vmc->lBD * vmc->lBD - vmc->l3 * vmc->l3;
+	
 	vmc->phi2 = 2 * atan2f((vmc->B0 + sqrt(vmc->A0 * vmc->A0 + vmc->B0 * vmc->B0 - vmc->C0 * vmc->C0)), vmc->A0 + vmc->C0);
 	vmc->phi3 = atan2f(vmc->YB - vmc->YD + vmc->l2 * arm_sin_f32(vmc->phi2), vmc->XB - vmc->XD + vmc->l2 * arm_cos_f32(vmc->phi2));
 	// C点直角坐标
@@ -71,8 +72,8 @@ void VMC_calc_2(vmc_leg_t *vmc) // 计算期望的关节输出力矩
 	vmc->j21 = (vmc->l4 * arm_sin_f32(vmc->phi0 - vmc->phi2) * arm_sin_f32(vmc->phi3 - vmc->phi4)) / arm_sin_f32(vmc->phi3 - vmc->phi2);
 	vmc->j22 = (vmc->l4 * arm_cos_f32(vmc->phi0 - vmc->phi2) * arm_sin_f32(vmc->phi3 - vmc->phi4)) / (vmc->L0 * arm_sin_f32(vmc->phi3 - vmc->phi2));
 
-	vmc->torque_set[0] = vmc->j11 * vmc->F0 + vmc->j12 * vmc->Tp; // 得到Front电机的输出轴期望力矩，F0为五连杆机构末端沿腿的推力
-	vmc->torque_set[1] = vmc->j21 * vmc->F0 + vmc->j22 * vmc->Tp; // 得到Back电机的输出轴期望力矩，Tp为沿中心轴的力矩
+	vmc->torque_set[0] = vmc->j11 * vmc->F0 + vmc->j12 * vmc->Tp; // phi1分支/J1(J2)的期望力矩，F0为五连杆机构末端沿腿的推力
+	vmc->torque_set[1] = vmc->j21 * vmc->F0 + vmc->j22 * vmc->Tp; // phi4分支/J0(J3)的期望力矩，Tp为沿中心轴的力矩
 }
 
 uint8_t ground_detection(vmc_leg_t *vmc)
@@ -148,18 +149,18 @@ void CalcPhi1AndPhi4(float phi0, float l0, float phi1_phi4[2])
 
 // 三次多项式拟合系数
 float Poly_Coefficient[12][4] = {
-	{-157.0203f, 179.8485f, -85.4172f, 0.0537f},
-	{-1.0899f, 3.0072f, -6.6735f, 0.1905f},
-	{-27.7037f, 27.7682f, -9.7108f, -0.2497f},
-	{-32.3706f, 32.7508f, -12.0579f, -0.3533f},
-	{-38.5250f, 54.5544f, -30.4327f, 8.2300f},
-	{-5.2760f, 8.9537f, -5.7839f, 1.8671f},
-	{152.7053f, -130.2649f, 28.7526f, 5.6772f},
-	{16.2673f, -16.3037f, 5.2455f, 0.1397f},
-	{-21.5602f, 27.7447f, -13.9335f, 3.1997f},
-	{-24.4104f, 31.6150f, -16.0527f, 3.7713f},
-	{224.1583f, -227.6099f, 81.5551f, 0.1116f},
-	{50.1510f, -51.5745f, 18.8992f, -0.3485f},
+	{-182.3050f, 196.6642f, -89.5626f, 0.2684f},
+	{-0.5441f, 2.8161f, -6.8860f, 0.1985f},
+	{-33.5189f, 31.2920f, -10.3542f, -0.2141f},
+	{-39.4331f, 37.1658f, -12.9313f, -0.3137f},
+	{-39.1161f, 55.0711f, -30.5840f, 8.2785f},
+	{-4.5533f, 8.5200f, -5.7114f, 1.8779f},
+	{197.4371f, -157.9305f, 34.0006f, 5.4496f},
+	{20.1883f, -18.9250f, 5.8190f, 0.1169f},
+	{-23.3938f, 28.9784f, -14.1897f, 3.2199f},
+	{-26.4950f, 33.1094f, -16.4262f, 3.8212f},
+	{269.8723f, -255.4974f, 86.7485f, -0.2000f},
+	{60.1130f, -57.7089f, 20.0702f, -0.4254f},
 };
 
 /**

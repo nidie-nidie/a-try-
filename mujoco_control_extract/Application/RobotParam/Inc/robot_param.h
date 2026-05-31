@@ -33,7 +33,6 @@
 // 关节电机相关参数
 #define MAX_TORQUE_PROTECT (25.0f) // (Nm)最大扭矩保护
 
-
 // DM控制参数
 #define CALIBRATE_VEL_KD (4.0f)  // 校准MIT速度控制KD
 #define ZERO_FORCE_VEL_KD (4.0f) // 无力MIT速度控制KD
@@ -41,7 +40,6 @@
 #define NORMAL_POS_KD (1.0f)     // 正常MIT位置控制KD
 #define DEBUG_POS_KP (8.0f)      // 调试MIT位置控制KP
 #define DEBUG_POS_KD (0.8f)      // 调试MIT位置控制KD
-
 
 // DM电机限位
 #define MIN_J0_ANGLE (-0.6f) // (rad)关节角度下限
@@ -63,9 +61,9 @@
 #define MIN_ROLL (-MAX_ROLL)
 #define MIN_LEG_LENGTH (0.11f)
 
-#define INIT_LEG_LENGTH (0.2f) // (m)底盘初始腿长, 测试0.12-0.14比较合适
-// #define INIT_LEG_LENGTH (0.20f) // (m)底盘初始腿长
-#define INIT_L0_PITCH (0.700f) // (rad)对齐 pos_debug 的初始虚拟腿 pitch
+#define INIT_LEG_LENGTH (0.11f) // (m)MuJoCo stand默认腿长，兼顾白色辅助线和原地稳定
+#define INIT_L0_PITCH (2.345f) // (rad)MuJoCo stand平衡点，使受力后髋-轮辅助线接近竖直
+#define INIT_THETA (1.57079632679f - INIT_L0_PITCH) // (rad) LQR虚拟腿theta平衡点
 #define INIT_ROLL (0.0f) // (rad)底盘初始滚转角
 
 // physical parameters ---------------------
@@ -74,8 +72,8 @@
 #define LEG_L3 (LEG_L2) // (m)腿3长度
 #define LEG_L4 (LEG_L1) // (m)腿4长度
 #define LEG_L5 (0.0f)   // (m)关节间距
-
 #define BODY_MASS (9.0f) // (kg)机身重量
+
 // DM电机初始角度与水平线的关系
 #define J0_ANGLE_OFFSET (-0.19163715f)       // (rad)关节0角度偏移量(电机0点到水平线的夹角)
 #define J1_ANGLE_OFFSET (0.19163715f + M_PI) // (rad)关节1角度偏移量(电机0点到水平线的夹角)
@@ -91,7 +89,7 @@
 #define W1_DIRECTION (1)
 
 // 轮子相关参数
-#define WHEEL_MASS (0.65f)     // (kg)轮子重量
+#define WHEEL_MASS (1.13f)     // (kg)轮子重量
 #define WHEEL_RADIUS (0.0625f) // (m)轮子半径
 #define WHEEL_BASE (0.48f)  // (m)驱动轮轴距，即左右轮之间的默认距离
 
@@ -103,10 +101,13 @@
 #define CALIBRATE_STOP_VELOCITY 0.05f // 关节速度小于该阈值时认为已经停止, rad/s
 #define CALIBRATE_STOP_TIME 200       // 校准停止状态持续超过该时间时认为已经稳定, ms
 #define CALIBRATE_VELOCITY 2.0f       // 校准时的关节速度, rad/s
+
+
 // IMU校准相关参数
 #define TEMP_CALI_THRESHOLD 40.0f // IMU校准时温度上限
 // 电池低压保护相关参数
 #define VBAT_LOW_WARNING_THRESHOLD 100 // 电池电压计数高于该值时自动断电
+
 
 // 底盘错误代码定义
 #define JOINT_ERROR_OFFSET ((uint8_t)1 << 0) // 关节电机错误偏移量
@@ -120,6 +121,7 @@
 #define KD_CHASSIS_STAND_UP (10.0f)
 #define MAX_IOUT_CHASSIS_STAND_UP (0.0f)
 #define MAX_OUT_CHASSIS_STAND_UP (2000.0f)
+
 // 腿长跟踪长度环PID参数
 #define KP_CHASSIS_LEG_LENGTH_LENGTH (150.0f)
 #define KI_CHASSIS_LEG_LENGTH_LENGTH (0.0f)
@@ -127,18 +129,21 @@
 #define MAX_IOUT_CHASSIS_LEG_LENGTH_LENGTH (0.0f)
 #define MAX_OUT_CHASSIS_LEG_LENGTH_LENGTH (40.0f)
 #define ALPHA_LEG_LENGTH_LENGTH (0.1f)
+
 // roll轴跟踪角度环PID参数
 #define KP_CHASSIS_ROLL_ANGLE (0.3f)
 #define KI_CHASSIS_ROLL_ANGLE (0.0f)
 #define KD_CHASSIS_ROLL_ANGLE (0.2f)
 #define MAX_IOUT_CHASSIS_ROLL_ANGLE (0.0f)
 #define MAX_OUT_CHASSIS_ROLL_ANGLE (0.1f)
+
 // 防劈叉补偿PID参数
 #define KP_CHASSIS_TP 30.0f
 #define KI_CHASSIS_TP 0.0f
 #define KD_CHASSIS_TP 1.0f
 #define MAX_IOUT_CHASSIS_TP 0.0f
 #define MAX_OUT_CHASSIS_TP 2.0f
+
 // 偏航角补偿PID参数
 #define KP_CHASSIS_TURN 2.5f
 #define KI_CHASSIS_TURN 0.0f

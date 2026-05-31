@@ -106,7 +106,7 @@
 #define VBAT_LOW_WARNING_THRESHOLD 100 // 电池电压计数高于该值时自动断电
 
 // 底盘错误代码定义
-#define JOINT_ERROR_OFFSET ((uint8_t)1 << 0) // 关节电机错误偏移量
+#define JOINT_ERROR_OFFSET ((uint8_t)1 << 0) // 关节电机错误偏移量   把 1 变成二进制的 0000 0001，左移两位
 #define WHEEL_ERROR_OFFSET ((uint8_t)1 << 1) // 驱动轮电机错误偏移量
 #define DBUS_ERROR_OFFSET ((uint8_t)1 << 2)  // dbus错误偏移量
 #define FLOATING_OFFSET ((uint8_t)1 << 3)    // 悬空状态偏移量

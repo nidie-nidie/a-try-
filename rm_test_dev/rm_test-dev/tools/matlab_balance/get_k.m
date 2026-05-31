@@ -1,7 +1,8 @@
 %计算不同腿长下适合的K矩阵，再进行多项式拟合，得到2*6矩阵每个参数对应的多项式参数
 tic
 j=1;
-leg=0.1:0.01:0.4;
+leg=0.11:0.01:0.35;
+
 for i=leg
     k=get_k_length(i);
     k11(j) = k(1,1);
@@ -21,6 +22,8 @@ for i=leg
 
     fprintf('leg_length=%d\n', i);
 end
+
+
 % 拟合曲线
 a11=polyfit(leg,k11,3);
 a12=polyfit(leg,k12,3);

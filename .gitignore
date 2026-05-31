@@ -22,6 +22,7 @@ compile_commands.json
 *.dylib
 *.dll
 *.exe
+*.mjb
 a.out
 
 # MuJoCo generated runtime files.

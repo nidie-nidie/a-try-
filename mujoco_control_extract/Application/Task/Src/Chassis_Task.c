@@ -119,6 +119,7 @@ void ChassisHandleException(void)
  * @param[in]      none
  * @retval         none
  */
+
 void ChassisSetMode(void)
 {
     if (chassis_move.error_code & DBUS_ERROR_OFFSET)
@@ -219,8 +220,8 @@ void ConsoleStandUp(void)
 {
     // ===腿部位置控制===
     float phi1_phi4_l[2], phi1_phi4_r[2];
-    CalcPhi1AndPhi4(M_PI_2, chassis_move.leg_set, phi1_phi4_l);
-    CalcPhi1AndPhi4(M_PI_2, chassis_move.leg_set, phi1_phi4_r);
+    CalcPhi1AndPhi4(INIT_L0_PITCH, chassis_move.leg_set, phi1_phi4_l);
+    CalcPhi1AndPhi4(INIT_L0_PITCH, chassis_move.leg_set, phi1_phi4_r);
 
     // 当解算出的角度正常时，设置目标角度
     if (!(isnan(phi1_phi4_l[0]) || isnan(phi1_phi4_l[1]) || isnan(phi1_phi4_r[0]) ||

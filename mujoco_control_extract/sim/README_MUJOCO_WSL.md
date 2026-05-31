@@ -415,19 +415,9 @@ BALANCE  -> start_flag = 1, mode = CHASSIS_SAFE
 
 
 
-仿真：
-cd /home/shun/MuJoCoBin/rm_control/mujoco_control_extract
-./build/mujoco_bridge --headless /home/shun/MuJoCoBin/MJCF/env.xml（无画面显示的仿真）
-
-
-cd /home/shun/MuJoCoBin/rm_control/mujoco_control_extract
-./build/mujoco_bridge /home/shun/MuJoCoBin/MJCF/env.xml(有画面显示的仿真)
 
 
 
 
-
-
-urdf 的初始零点位置在什么地方
 
 

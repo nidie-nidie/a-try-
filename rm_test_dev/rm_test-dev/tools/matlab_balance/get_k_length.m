@@ -12,15 +12,16 @@ function K = get_k_length(leg_length)
     %Nf    : 地面对驱动轮摩擦力             Im  : 机体绕质心转动惯量
 
     syms x(t) T R Iw mw M L LM theta(t) l phi(t) mp g Tp Ip IM
+
     syms f1 f2 f3 d_theta d_x d_phi theta0 x0 phi0 
 
     R1=0.0625;                         %驱动轮半径
     L1=leg_length/2;                  %摆杆重心到驱动轮轴距离
     LM1=leg_length/2;                 %摆杆重心到其转轴距离
     l1=0.03;                          %机体重心距离转轴距离
-    mw1=1.30;                         %驱动轮质量
+    mw1=1.13;                         %驱动轮质量
     mp1=1.70;                         %杆质量
-    M1=8.5;                           %机体质量
+    M1=9;                           %机体质量
     Iw1=mw1*R1^2;                     %驱动轮转动惯量
     Ip1=mp1*((L1+LM1)^2+0.05^2)/12.0; %摆杆转动惯量
     %IM1=M1*(0.3^2+0.12^2)/12.0;       %机体绕质心转动惯量
