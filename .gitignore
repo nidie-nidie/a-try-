@@ -30,3 +30,12 @@ mujoco_control_extract/build
 mujoco_control_extract/MUJOCO_LOG.TXT
 mujoco_control_extract/mjmodel.xml
 build_pos_debug/
+
+# Runtime logs and Python cache.
+MUJOCO_LOG.TXT
+**/MUJOCO_LOG.TXT
+logs/
+*.log
+__pycache__/
+**/__pycache__/
+*.pyc
