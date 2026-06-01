@@ -18,26 +18,63 @@ mujoco_control_extract/sim/models/wheel_leg_urdf4_self_mesh_all.xml
 cmake --build mujoco_control_extract/build --target mujoco_bridge
 ```
 
-推荐 GUI 启动命令：
+## 常用仿真命令
+
+完整流程：贴地起步，先走 `STAND_UP`，自动切到 `SAFE`，再进入 forward：
 
 ```bash
-./mujoco_control_extract/build/mujoco_bridge --mode safe --drive stand
-./mujoco_control_extract/build/mujoco_bridge --mode safe --drive forward
+./mujoco_control_extract/build/mujoco_bridge --auto-stand-forward
 ```
 
-推荐 headless 验证命令：
+完整流程 headless 验证：
 
 ```bash
-./mujoco_control_extract/build/mujoco_bridge --headless --time 3 --mode safe --drive stand
-./mujoco_control_extract/build/mujoco_bridge --headless --time 3 --mode safe --drive forward
+./mujoco_control_extract/build/mujoco_bridge --headless --time 3 --auto-stand-forward
+```
+
+贴地起步，但直接进入 `SAFE` 控制：
+
+```bash
+./mujoco_control_extract/build/mujoco_bridge --ground-init --mode safe --drive stand
+./mujoco_control_extract/build/mujoco_bridge --ground-init --mode safe --drive forward
+```
+
+悬空站姿起步：
+
+```bash
+./mujoco_control_extract/build/mujoco_bridge --hang-init --mode safe --drive stand
+./mujoco_control_extract/build/mujoco_bridge --hang-init --mode safe --drive forward
+```
+
+XML 原始高度起步，也就是直接使用 XML 里的 base 初始 `z`，会从悬空高度落下：
+
+```bash
+./mujoco_control_extract/build/mujoco_bridge --auto-stand-forward --xml-init
+```
+
+冻结初始姿态，不跑仿真：
+
+```bash
+./mujoco_control_extract/build/mujoco_bridge --freeze-init --ground-init --mode safe --drive stand
+./mujoco_control_extract/build/mujoco_bridge --freeze-init --hang-init --mode safe --drive stand
+```
+
+默认前进速度是 `0.20 m/s`，可以用命令行改：
+
+```bash
+./mujoco_control_extract/build/mujoco_bridge --auto-stand-forward --forward-speed 0.2
+./mujoco_control_extract/build/mujoco_bridge --ground-init --mode safe --drive forward --forward-speed 0.2
 ```
 
 说明：
 
 ```text
-推荐优先使用 --mode safe。
+--auto-stand-forward 会从贴地初态开始，先走 STAND_UP，再自动切 SAFE 并进入 forward。
+--ground-init 使用生成的贴地站姿初态。
+--hang-init 使用生成的悬空站姿初态。
+--xml-init 使用 XML 默认 qpos，不加载 pos_debug_ground / pos_debug_hang 这类初始姿态。
 --drive stand / --drive forward 是上层运行状态机。
---mode stand 会先走 STAND_UP 起立流程；目前 self_mesh_all.xml 下更稳的是直接从 SAFE 起步。
+--mode stand 会先走 STAND_UP 起立流程。
 ```
 
 仿真窗口按键：
@@ -52,33 +89,10 @@ ESC：退出
 
 默认仿真会锁住车体航向，避免串腿在原地绕圈；如果要调试 yaw 自由度，可以加 `--free-yaw`。
 
-默认前进速度是 `0.20 m/s`，可以用命令行改：
-
-```bash
-./mujoco_control_extract/build/mujoco_bridge --mode safe --drive forward --forward-speed 0.2
-```
-
-如果想启动后直接进入前进状态：
-
-```bash
-./mujoco_control_extract/build/mujoco_bridge --mode safe --drive forward
-```
-
-只冻结初始姿态，不跑仿真：
-
-```bash
-./mujoco_control_extract/build/mujoco_bridge --freeze-init --mode safe --drive stand
-```
-
-悬空冻结：
-
-```bash
-./mujoco_control_extract/build/mujoco_bridge --freeze-init --hang-init --mode safe --drive stand
-```
-
 如果你已经 `cd mujoco_control_extract` 进入子目录，也可以这样运行：
 
 ```bash
+./build/mujoco_bridge --auto-stand-forward
 ./build/mujoco_bridge --mode safe --drive stand
 ./build/mujoco_bridge --mode safe --drive forward
 ```

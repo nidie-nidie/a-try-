@@ -48,6 +48,12 @@ typedef struct
     int hold_yaw_pending;
 } DriveCommand;
 
+typedef struct
+{
+    int enabled;
+    int forward_started;
+} StandForwardSequence;
+
 static mjModel *g_model = 0;
 static mjData *g_data = 0;
 static mjvCamera g_camera;
@@ -1033,7 +1039,8 @@ static void step_controller(const mjModel *m,
                             int invert_right_joints,
                             int start_mode,
                             double standup_time,
-                            int *switched_to_safe)
+                            int *switched_to_safe,
+                            StandForwardSequence *stand_forward)
 {
     SimControllerState state;
     SimControllerOutput output;
@@ -1053,6 +1060,19 @@ static void step_controller(const mjModel *m,
                 printf("Switch STAND_UP -> SAFE at t=%6.3f\n", d->time);
                 fflush(stdout);
                 *switched_to_safe = 1;
+            }
+            if (stand_forward != 0 && stand_forward->enabled && !stand_forward->forward_started)
+            {
+                const float desired_speed = g_drive_command.forward_speed < 0.0f
+                                                ? -drive_speed_magnitude(&g_drive_command)
+                                                : drive_speed_magnitude(&g_drive_command);
+                request_drive_speed(&g_drive_command, desired_speed);
+                stand_forward->forward_started = 1;
+                printf("Auto drive -> %s at t=%6.3f, speed=%.3f\n",
+                       drive_command_name(&g_drive_command),
+                       d->time,
+                       g_drive_command.forward_speed);
+                fflush(stdout);
             }
         }
         SimController_SetState(&state);
@@ -1134,7 +1154,8 @@ static int run_headless(const mjModel *m,
                         int invert_right_joints,
                         int freeze_init,
                         int start_mode,
-                        double standup_time)
+                        double standup_time,
+                        int auto_stand_forward)
 {
     if (freeze_init)
     {
@@ -1143,10 +1164,21 @@ static int run_headless(const mjModel *m,
     }
 
     int switched_to_safe = 0;
+    StandForwardSequence stand_forward = {auto_stand_forward, 0};
     int steps = (int)(sim_time / m->opt.timestep);
     for (int i = 0; i < steps; ++i)
     {
-        step_controller(m, d, map, i % 500 == 0, zero_control, zero_wheels, invert_right_joints, start_mode, standup_time, &switched_to_safe);
+        step_controller(m,
+                        d,
+                        map,
+                        i % 500 == 0,
+                        zero_control,
+                        zero_wheels,
+                        invert_right_joints,
+                        start_mode,
+                        standup_time,
+                        &switched_to_safe,
+                        &stand_forward);
     }
 
     return 0;
@@ -1161,7 +1193,8 @@ static int run_viewer(mjModel *m,
                       int invert_right_joints,
                       int freeze_init,
                       int start_mode,
-                      double standup_time)
+                      double standup_time,
+                      int auto_stand_forward)
 {
     if (!glfwInit())
     {
@@ -1205,20 +1238,34 @@ static int run_viewer(mjModel *m,
     double last_wall = glfwGetTime();
     int print_tick = 0;
     int switched_to_safe = 0;
+    StandForwardSequence stand_forward = {auto_stand_forward, 0};
 
     while (!glfwWindowShouldClose(window) && d->time < sim_time)
     {
         double now = glfwGetTime();
         double elapsed = now - last_wall;
         last_wall = now;
-        sync_keyboard_drive_command(window);
+        if (!auto_stand_forward)
+        {
+            sync_keyboard_drive_command(window);
+        }
 
         if (!g_paused && !freeze_init)
         {
             double target_time = d->time + elapsed;
             while (d->time < target_time && !glfwWindowShouldClose(window))
             {
-                step_controller(m, d, map, print_tick % 500 == 0, zero_control, zero_wheels, invert_right_joints, start_mode, standup_time, &switched_to_safe);
+                step_controller(m,
+                                d,
+                                map,
+                                print_tick % 500 == 0,
+                                zero_control,
+                                zero_wheels,
+                                invert_right_joints,
+                                start_mode,
+                                standup_time,
+                                &switched_to_safe,
+                                &stand_forward);
                 ++print_tick;
             }
         }
@@ -1249,6 +1296,8 @@ int main(int argc, char **argv)
     int invert_right_joints = 0;
     int freeze_init = 0;
     int debug_geometry = 0;
+    int auto_stand_forward = 0;
+    int xml_init_requested = 0;
     int start_mode = CHASSIS_SAFE;
     double standup_time = 0.2;
     double sim_time = 100.0;
@@ -1278,6 +1327,16 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--debug-geometry") == 0)
         {
             debug_geometry = 1;
+        }
+        else if (strcmp(argv[i], "--xml-init") == 0)
+        {
+            init_key_name = "";
+            xml_init_requested = 1;
+        }
+        else if (strcmp(argv[i], "--auto-stand-forward") == 0 ||
+                 strcmp(argv[i], "--stand-forward") == 0)
+        {
+            auto_stand_forward = 1;
         }
         else if (strcmp(argv[i], "--time") == 0 && i + 1 < argc)
         {
@@ -1382,6 +1441,13 @@ int main(int argc, char **argv)
         }
     }
 
+    if (auto_stand_forward)
+    {
+        start_mode = CHASSIS_STAND_UP;
+        init_key_name = xml_init_requested ? "" : "pos_debug_ground";
+        queue_drive_mode(&g_drive_command, DRIVE_STAND);
+    }
+
     char error[1024] = {0};
     model_path = resolve_default_model_path(model_path);
 
@@ -1426,12 +1492,33 @@ int main(int argc, char **argv)
            g_wheel_ctrl_sign[0],
            g_wheel_ctrl_sign[1],
            g_use_wheel_balance_override);
+    if (init_key_name == 0 || init_key_name[0] == '\0')
+    {
+        printf("Initial pose: XML default qpos.\n");
+    }
+    else if (strcmp(init_key_name, "pos_debug_ground") == 0)
+    {
+        printf("Initial pose: generated ground stand pose.\n");
+    }
+    else if (strcmp(init_key_name, "pos_debug_hang") == 0)
+    {
+        printf("Initial pose: generated hanging stand pose.\n");
+    }
+    else
+    {
+        printf("Initial pose: keyframe '%s'.\n", init_key_name);
+    }
+    if (auto_stand_forward)
+    {
+        printf("Auto stand-forward: %s init -> STAND_UP -> SAFE -> forward.\n",
+               (init_key_name == 0 || init_key_name[0] == '\0') ? "XML" : "ground");
+    }
     if (start_mode == CHASSIS_STAND_UP && standup_time >= 0.0)
     {
         printf("Start in STAND_UP, auto switch to SAFE after %.3f s.\n", standup_time);
     }
 
-    int result = headless ? run_headless(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init, start_mode, standup_time) : run_viewer(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init, start_mode, standup_time);
+    int result = headless ? run_headless(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init, start_mode, standup_time, auto_stand_forward) : run_viewer(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init, start_mode, standup_time, auto_stand_forward);
 
     mj_deleteData(d);
     mj_deleteModel(m);
