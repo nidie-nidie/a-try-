@@ -61,9 +61,9 @@
 #define MIN_ROLL (-MAX_ROLL)
 #define MIN_LEG_LENGTH (0.11f)
 
-#define INIT_LEG_LENGTH (0.11f) // (m)MuJoCo stand默认腿长，兼顾白色辅助线和原地稳定
-#define INIT_L0_PITCH (2.345f) // (rad)MuJoCo stand平衡点，使受力后髋-轮辅助线接近竖直
-#define INIT_THETA (1.57079632679f - INIT_L0_PITCH) // (rad) LQR虚拟腿theta平衡点
+#define INIT_LEG_LENGTH (0.2f) // (m)底盘初始腿长
+#define INIT_L0_PITCH (M_PI_2) // (rad)站立腿部phi0参考点
+#define INIT_THETA (0.0f)      // (rad) LQR虚拟腿theta平衡点
 #define INIT_ROLL (0.0f) // (rad)底盘初始滚转角
 
 // physical parameters ---------------------

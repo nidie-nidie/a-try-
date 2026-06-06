@@ -3,8 +3,10 @@ project(rm_mujoco_controller C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/ThirdParty.cmake")
+
 find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
 
 set(CONTROL_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -42,10 +44,6 @@ add_executable(mujoco_bridge
 )
 
 target_compile_definitions(mujoco_bridge PRIVATE SIM_MUJOCO)
-target_link_libraries(mujoco_bridge PRIVATE rm_controller m glfw OpenGL::GL)
-
-if(DEFINED ENV{MUJOCO_ROOT})
-    target_include_directories(mujoco_bridge PRIVATE "$ENV{MUJOCO_ROOT}/include")
-    target_link_directories(mujoco_bridge PRIVATE "$ENV{MUJOCO_ROOT}/lib")
-    target_link_libraries(mujoco_bridge PRIVATE mujoco)
-endif()
+target_link_libraries(mujoco_bridge PRIVATE rm_controller m OpenGL::GL)
+rm_target_link_glfw(mujoco_bridge)
+rm_target_link_mujoco(mujoco_bridge)

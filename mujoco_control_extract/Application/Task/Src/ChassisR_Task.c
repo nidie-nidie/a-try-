@@ -185,7 +185,7 @@ void ChassisR_control_loop(void)
 
     chassis_move.leg_tp = PID_Calculate(&tp_pid, 0.0f, chassis_move.theta_err); // 防劈叉pid计算
 
-    x_r[0] = X0_OFFSET + (right.theta - INIT_THETA);                   // theta误差，目标theta是初始虚拟腿角对应的平衡点
+    x_r[0] = X0_OFFSET + (right.theta - INIT_THETA);                   // theta误差，目标theta与rm_test_dev一致为0
     x_r[1] = X1_OFFSET + (right.d_theta - 0.0f);                       // theta_dot误差，目标theta_dot是0
     x_r[2] = X2_OFFSET + (chassis_move.x_filter - chassis_move.x_set); // x误差，目标x是滤波后的x_set
     x_r[3] = X3_OFFSET + (chassis_move.v_filter - chassis_move.v_set); // x_dot误差，目标x_dot是滤波后的v_set

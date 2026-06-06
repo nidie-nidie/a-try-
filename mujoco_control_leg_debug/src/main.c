@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <GLFW/glfw3.h>
-#include <mujoco/mujoco.h>
+#include "rm_third_party/glfw.h"
+#include "rm_third_party/mujoco.h"
 
 #include "control_joint_space.h"
 #include "control_task_space.h"
@@ -207,14 +207,23 @@ static void apply_leg_control(const mjModel *m, mjData *d, const LegDebugModelMa
     }
 }
 
+
+
+
+// 
 static void reset_mode_home_from_current_pose(mjModel *m, mjData *d, const LegDebugModelMap *map, LegDebugState *state)
 {
+    // 初始化 VMC 相关状态
     leg_debug_initialize_vmc_runtime(state);
+    // 让 MuJoCo 根据当前的 qpos 和 qvel 更新派生量
     mj_forward(m, d);
+    // 根据当前关节角用 vmc 计算测量值
     leg_debug_update_measurements(m, d, map, state);
+    // 给 task space 模式设置 home ，把当前的末端位置作为 任务空间的初始目标。
     leg_debug_task_space_reset_home(map, d, state);
+    // 给 joint space 模式设置 home ，把当前的关节角作为 关节空间的初始目标。
     leg_debug_joint_space_reset_home(map, d, state);
-
+    // 如果是 task sapce 模式，计算一次 target vmc 以更新 target_l0_vmc 和 target_phi0_vmc，使得它们和测量值一致，从而避免 reset 后的第一步出现大跳变。
     if (state->control_mode == LEG_DEBUG_CONTROL_TASK_SPACE)
     {
         LegDebugState previous = *state;
@@ -222,6 +231,8 @@ static void reset_mode_home_from_current_pose(mjModel *m, mjData *d, const LegDe
     }
     leg_debug_update_target_vmc(state);
 }
+
+
 
 static void reset_simulation_to_xml_initial(mjModel *m, mjData *d, const LegDebugModelMap *map, LegDebugState *state)
 {
@@ -853,7 +864,7 @@ int main(int argc, char **argv)
         mj_deleteModel(m);
         return 1;
     }
-
+// 启动时调用 reset home 函数，
     reset_mode_home_from_current_pose(m, d, &map, &state);
     leg_debug_infer_ctrl_signs(m, d, &map, &state);
     leg_debug_update_measurements(m, d, &map, &state);

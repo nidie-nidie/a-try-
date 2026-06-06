@@ -4,8 +4,9 @@ project(mujoco_control_leg_debug C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/ThirdParty.cmake")
+
 find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
 
 set(CONTROL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../mujoco_control_extract")
 
@@ -64,18 +65,6 @@ target_include_directories(leg_debug PRIVATE
     "${CONTROL_ROOT}/Components/Lib/Inc"
 )
 
-target_link_libraries(leg_debug PRIVATE leg_debug_controller m glfw OpenGL::GL)
-
-set(LEG_DEBUG_MUJOCO_ROOT "$ENV{MUJOCO_ROOT}")
-if(NOT LEG_DEBUG_MUJOCO_ROOT)
-    set(LEG_DEBUG_MUJOCO_ROOT "/home/shun/MuJoCoBin/mujoco-3.3.0")
-endif()
-
-if(EXISTS "${LEG_DEBUG_MUJOCO_ROOT}/include/mujoco/mujoco.h")
-    target_include_directories(leg_debug PRIVATE "${LEG_DEBUG_MUJOCO_ROOT}/include")
-    target_link_directories(leg_debug PRIVATE "${LEG_DEBUG_MUJOCO_ROOT}/lib")
-    target_link_libraries(leg_debug PRIVATE mujoco)
-    set_target_properties(leg_debug PROPERTIES BUILD_RPATH "${LEG_DEBUG_MUJOCO_ROOT}/lib")
-else()
-    message(FATAL_ERROR "MuJoCo headers not found. Set MUJOCO_ROOT or install MuJoCo under /home/shun/MuJoCoBin/mujoco-3.3.0")
-endif()
+target_link_libraries(leg_debug PRIVATE leg_debug_controller m OpenGL::GL)
+rm_target_link_glfw(leg_debug)
+rm_target_link_mujoco(leg_debug)

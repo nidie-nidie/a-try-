@@ -146,14 +146,29 @@ cd /home/shun/MuJoCoBin/rm_control/mujoco_control_extract
 确认 MuJoCo 安装目录：
 
 ```bash
-ls /home/shun/MuJoCoBin/mujoco-3.3.0
+ls ../third_party/mujoco
 ```
+
+如果你希望换电脑后少改路径，推荐把 MuJoCo SDK 放到仓库顶层的 `third_party/mujoco/`。至少需要有：
+
+```text
+third_party/mujoco/include/mujoco/mujoco.h
+third_party/mujoco/lib/libmujoco.so
+```
+
+如果 SDK 里是 `libmujoco.so.3.3.0` 这种版本化文件，也可以直接保留原名。
 
 配置 CMake：
 
 （意思是读取 cmake list 然后找到mujoco 中的头文件和库，并且生成 make file。）
 ```bash
-env MUJOCO_ROOT=/home/shun/MuJoCoBin/mujoco-3.3.0 cmake -S sim -B build
+cmake -S sim -B build
+```
+
+如果 MuJoCo 不在 `third_party/mujoco`，可以显式指定：
+
+```bash
+cmake -DMUJOCO_ROOT=/path/to/mujoco -S sim -B build
 ```
 
 编译：
@@ -183,14 +198,14 @@ cmake --build build -j
 如果改了 `sim/CMakeLists.txt`，建议重新配置再编译：
 
 ```bash
-env MUJOCO_ROOT=/home/shun/MuJoCoBin/mujoco-3.3.0 cmake -S sim -B build
+cmake -S sim -B build
 cmake --build build -j
 ```
 
 一行写法也可以：
 
 ```bash
-env MUJOCO_ROOT=/home/shun/MuJoCoBin/mujoco-3.3.0 cmake -S sim -B build && cmake --build build -j
+cmake -S sim -B build && cmake --build build -j
 ```
 
 注意不要把两条命令粘成这样：

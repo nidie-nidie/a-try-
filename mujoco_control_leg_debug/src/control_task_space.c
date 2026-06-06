@@ -1,9 +1,11 @@
 #include "control_task_space.h"
 
-#include <GLFW/glfw3.h>
+#include "rm_third_party/glfw.h"
 #include <math.h>
 
 #include "model_helpers.h"
+
+
 
 void leg_debug_task_space_reset_home(const LegDebugModelMap *map, const mjData *d, LegDebugState *state)
 {
@@ -24,6 +26,9 @@ void leg_debug_task_space_reset_home(const LegDebugModelMap *map, const mjData *
     }
 }
 
+
+
+// 通过键盘控制 整个车体的状态
 void leg_debug_task_space_apply_key(LegDebugState *state, int key)
 {
     const double length_step = state->keyboard_length_rate * kLegDebugKeyboardDt;
@@ -41,6 +46,7 @@ void leg_debug_task_space_apply_key(LegDebugState *state, int key)
         leg_debug_append_input_command(state, "R reset task");
         return;
     }
+    // 控制腿长伸长和缩短
     if (key == GLFW_KEY_UP)
     {
         state->left_l0_cmd += length_step;
@@ -55,6 +61,7 @@ void leg_debug_task_space_apply_key(LegDebugState *state, int key)
         state->control_enabled = 1;
         leg_debug_append_input_command(state, "DOWN both L0 -");
     }
+    // 
     if (key == GLFW_KEY_U)
     {
         state->left_l0_cmd += length_step;
@@ -118,6 +125,7 @@ void leg_debug_task_space_apply_key(LegDebugState *state, int key)
         leg_debug_append_input_command(state, "C right phi0 -");
     }
 
+    // 限制腿长在合理范围内，防止求解器发散
     state->left_l0_cmd = leg_debug_clamp(state->left_l0_cmd, state->min_leg_length, state->max_leg_length);
     state->right_l0_cmd = leg_debug_clamp(state->right_l0_cmd, state->min_leg_length, state->max_leg_length);
 }

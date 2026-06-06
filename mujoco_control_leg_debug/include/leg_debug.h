@@ -1,7 +1,7 @@
 #ifndef MUJOCO_CONTROL_LEG_DEBUG_LEG_DEBUG_H
 #define MUJOCO_CONTROL_LEG_DEBUG_LEG_DEBUG_H
 
-#include <mujoco/mujoco.h>
+#include "rm_third_party/mujoco.h"
 
 #include "VMC_Calc.h"
 

@@ -6,8 +6,14 @@
 
 ```bash
 cd /home/shun/MuJoCoBin/rm_control
-env MUJOCO_ROOT=/home/shun/MuJoCoBin/mujoco-3.3.0 cmake -S mujoco_control_leg_debug -B build_leg_debug
+cmake -S mujoco_control_leg_debug -B build_leg_debug
 cmake --build build_leg_debug -j
+```
+
+默认会优先查找 `third_party/mujoco`。如果 MuJoCo SDK 放在别的位置，可以这样指定：
+
+```bash
+cmake -DMUJOCO_ROOT=/path/to/mujoco -S mujoco_control_leg_debug -B build_leg_debug
 ```
 
 ## Run

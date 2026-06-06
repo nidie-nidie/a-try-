@@ -400,16 +400,21 @@ double leg_debug_phi_to_joint_qpos(double phi, double angle_offset, int directio
     return -theta_transform((float)phi, (float)(-angle_offset), (int8_t)direction, 1);
 }
 
+
+
+// 把当前的目标关节角 再正解成 vmc 的腿长和角度，用来现实和检查 IK 是否能够自洽。
 void leg_debug_update_target_vmc(LegDebugState *state)
 {
+    // 创建两个临时的 vmc 结构，分别代表左腿和右腿的目标状态
     vmc_leg_t left;
     vmc_leg_t right;
-
+    // 清零这两个结构体，确保它们的初始状态是干净的
     memset(&left, 0, sizeof(left));
     memset(&right, 0, sizeof(right));
+    // 调用 VMC_init 函数来初始化这两个结构体，设置它们的默认值和参数
     VMC_init(&left);
     VMC_init(&right);
-
+    // 
     left.phi4 = (float)leg_debug_joint_qpos_to_phi(state->target_q[LEG_DEBUG_JOINT_LEFT_FRONT],
                                                     LEG_DEBUG_PARAM_J0_ANGLE_OFFSET,
                                                     LEG_DEBUG_PARAM_J0_DIRECTION);

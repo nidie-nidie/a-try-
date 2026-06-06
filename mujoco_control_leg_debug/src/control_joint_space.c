@@ -1,6 +1,6 @@
 #include "control_joint_space.h"
 
-#include <GLFW/glfw3.h>
+#include "rm_third_party/glfw.h"
 #include <stdio.h>
 
 void leg_debug_joint_space_reset_home(const LegDebugModelMap *map, const mjData *d, LegDebugState *state)

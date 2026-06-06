@@ -5,6 +5,7 @@
 #include "INS_Task.h"
 #include "robot_param.h"
 
+// 定义一个结构体，结构体的名字叫做 vmc_leg_t，结构体里面包含了很多变量，这些变量都是浮点数类型的，还有一些是无符号8位整数类型的。
 typedef struct
 {
 	/*左右两腿的公共参数，固定不变*/

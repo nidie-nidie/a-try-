@@ -1,5 +1,36 @@
 # rm_control 工作区总览
 
+
+## third_party 第三方库管理
+
+当前工程已经预留了顶层 `third_party/`，用来统一管理会影响编译的第三方库。最直接的用法是把 MuJoCo SDK 放成下面这种结构：
+
+```text
+third_party/mujoco/include/mujoco/mujoco.h
+third_party/mujoco/lib/libmujoco.so
+
+```
+
+实际 SDK 里如果是 `libmujoco.so.3.3.0` 这种版本化文件也可以，CMake 会在 `third_party/mujoco/lib` 里自动查找。
+
+CMake 会按这个顺序找 MuJoCo：
+
+```text
+1. cmake -DMUJOCO_ROOT=/path/to/mujoco 显式指定
+2. third_party/mujoco
+3. 环境变量 MUJOCO_ROOT
+4. 仓库同级目录 ../mujoco-3.3.0 或 ../mujoco
+```
+
+工程源码里通过 `third_party/include/rm_third_party/` 下的 wrapper 头文件引用第三方库，例如：
+
+```c
+#include "rm_third_party/mujoco.h"
+#include "rm_third_party/glfw.h"
+```
+
+所以以后新增第三方库时，推荐做两件事：库本体放到 `third_party/<lib_name>/`，再在 `third_party/include/rm_third_party/` 下面加一个小 wrapper 头文件。具体约定见 `third_party/README.md`。
+
 这个仓库是轮腿机器人控制与 MuJoCo 仿真的综合工作区。它不是单一工程，而是同时保存了几套不同用途的内容：
 
 - 从实车嵌入式工程抽取出来的 C 控制代码。
@@ -27,6 +58,7 @@
 | `mujoco_control_leg_debug/` | 独立腿部调试 viewer，含调试控制器、模型、mesh。 | 用来单独调五连杆腿部几何、关节映射、碰撞和辅助线。 |
 | `wheel_leg_urdf4/` | ROS/URDF/MJCF 导出的机器人模型资源。 | 模型源资源库，不直接承担控制。 |
 | `rm_test_dev/` | 原始 STM32 工程、旧 Python MuJoCo 仿真、工具和文档。 | 参考工程和历史版本。 |
+| `third_party/` | 第三方库和统一 wrapper 头文件。 | 优先放 MuJoCo SDK，也可扩展 GLFW 等依赖。 |
 | `build/` | 顶层旧 CMake 构建输出。 | 编译产物，不应长期跟踪。 |
 | `build_leg_debug/` | `mujoco_control_leg_debug/` 的构建输出。 | 编译产物，不应长期跟踪。 |
 | `build_origin_stand/` | 旧 standing/origin 调试构建输出。 | 编译产物，不应长期跟踪。 |
@@ -108,8 +140,14 @@ mj_step()
 常用编译命令：
 
 ```bash
-env MUJOCO_ROOT=/home/shun/MuJoCoBin/mujoco-3.3.0 cmake -S mujoco_control_extract/sim -B mujoco_control_extract/build
+cmake -S mujoco_control_extract/sim -B mujoco_control_extract/build
 cmake --build mujoco_control_extract/build -j
+```
+
+如果 MuJoCo 没有放在 `third_party/mujoco`，也可以显式指定：
+
+```bash
+cmake -DMUJOCO_ROOT=/path/to/mujoco -S mujoco_control_extract/sim -B mujoco_control_extract/build
 ```
 
 常用运行命令：
@@ -343,4 +381,3 @@ mujoco.mj_step()
 3. 不要先大规模移动源码目录，先确认 CMake、XML include、mesh 路径不会断。
 4. 大于 50 MB 的模型资源可以先保留，但后续建议判断是否改用 Git LFS。
 5. `mujoco_control_extract/mjmodel.mjb` 属于生成物，不应该再进入 Git 历史。
-

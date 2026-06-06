@@ -25,6 +25,12 @@ compile_commands.json
 *.mjb
 a.out
 
+# Allow intentionally vendored SDK binaries under third_party/.
+!third_party/**/*.a
+!third_party/**/*.dll
+!third_party/**/*.dylib
+!third_party/**/*.so
+
 # MuJoCo generated runtime files.
 mujoco_control_extract/build
 mujoco_control_extract/MUJOCO_LOG.TXT

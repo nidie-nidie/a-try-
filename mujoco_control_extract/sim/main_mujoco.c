@@ -5,8 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <GLFW/glfw3.h>
-#include <mujoco/mujoco.h>
+#include "rm_third_party/glfw.h"
+#include "rm_third_party/mujoco.h"
 
 #include "Chassis_Task.h"
 #include "robot_param.h"
@@ -42,6 +42,7 @@ typedef struct
     float forward_speed;
     float current_speed;
     float target_x;
+    float position_hold_blend;
     float yaw_hold;
     int yaw_lock;
     int hold_position_pending;
@@ -58,19 +59,26 @@ static int g_button_left = 0;
 static int g_button_middle = 0;
 static int g_button_right = 0;
 static int g_paused = 0;
+static int g_key_forward = 0;
+static int g_key_backward = 0;
+static int g_key_leg_up = 0;
+static int g_key_leg_down = 0;
 static double g_last_x = 0.0;
 static double g_last_y = 0.0;
 static mjtNum g_joint_ctrl_sign[4] = {1.0, 1.0, 1.0, 1.0};
 static mjtNum g_wheel_ctrl_sign[2] = {1.0, 1.0};
 static int g_use_wheel_balance_override = 1;
-static float g_balance_pitch_kp = 95.0f;
+static float g_balance_pitch_target = -0.075f;
+static float g_balance_pitch_kp = 75.0f;
 static float g_balance_pitch_kd = 18.0f;
-static float g_balance_pos_kp = 6.0f;
-static float g_balance_vel_kd = 16.0f;
+static float g_balance_pos_kp = 65.0f;
+static float g_balance_vel_kd = 32.0f;
+static float g_balance_pos_ramp_time = 2.0f;
 static float g_balance_drive_kff = 100.0f;
 static float g_balance_yaw_kp = 1.2f;
 static float g_balance_yaw_kd = 0.25f;
 static float g_balance_wheel_limit = 35.0f;
+static float g_keyboard_leg_rate = 0.04f;
 static DriveCommand g_drive_command = {
     .mode = DRIVE_STAND,
     .leg_set = INIT_LEG_LENGTH,
@@ -78,6 +86,7 @@ static DriveCommand g_drive_command = {
     .forward_speed = 0.2f,
     .current_speed = 0.0f,
     .target_x = 0.0f,
+    .position_hold_blend = 1.0f,
     .yaw_hold = 0.0f,
     .yaw_lock = 1,
     .hold_position_pending = 1,
@@ -216,8 +225,13 @@ static void queue_drive_mode(DriveCommand *command, DriveMode mode)
 {
     if (command->mode != mode)
     {
+        const DriveMode previous_mode = command->mode;
         command->mode = mode;
         command->hold_position_pending = 1;
+        if (mode == DRIVE_FORWARD || previous_mode == DRIVE_FORWARD)
+        {
+            command->position_hold_blend = 0.0f;
+        }
     }
     command->hold_yaw_pending = 1;
 }
@@ -240,13 +254,20 @@ static void request_drive_speed(DriveCommand *command, float desired_speed)
     command->forward_speed = desired_speed;
 }
 
-static void sync_keyboard_drive_command(GLFWwindow *window)
+static void sync_keyboard_drive_command(GLFWwindow *window, double dt)
 {
     const int forward_down = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ||
                              glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
     const int backward_down = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
+    const int leg_up_down = glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
+    const int leg_down_down = glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
     const char *before = drive_command_name(&g_drive_command);
     float desired_speed = 0.0f;
+
+    g_key_forward = forward_down;
+    g_key_backward = backward_down;
+    g_key_leg_up = leg_up_down;
+    g_key_leg_down = leg_down_down;
 
     if (forward_down && !backward_down)
     {
@@ -258,6 +279,17 @@ static void sync_keyboard_drive_command(GLFWwindow *window)
     }
 
     request_drive_speed(&g_drive_command, desired_speed);
+    if (leg_up_down && !leg_down_down)
+    {
+        g_drive_command.leg_set += (float)dt * g_keyboard_leg_rate;
+    }
+    else if (leg_down_down && !leg_up_down)
+    {
+        g_drive_command.leg_set -= (float)dt * g_keyboard_leg_rate;
+    }
+    g_drive_command.leg_set = (float)clamp_double(g_drive_command.leg_set,
+                                                  MIN_LEG_LENGTH,
+                                                  MAX_LEG_LENGTH);
 
     if (strcmp(before, drive_command_name(&g_drive_command)) != 0)
     {
@@ -722,6 +754,25 @@ static void update_drive_command(DriveCommand *command, const SimControllerState
     float speed_delta = target_speed - command->current_speed;
     speed_delta = (float)clamp_double(speed_delta, -max_speed_delta, max_speed_delta);
     command->current_speed += speed_delta;
+
+    if (command->mode == DRIVE_STAND)
+    {
+        if (command->position_hold_blend < 1.0f)
+        {
+            const float blend_delta = g_balance_pos_ramp_time > 1.0e-4f
+                                          ? (float)(dt / g_balance_pos_ramp_time)
+                                          : 1.0f;
+            command->position_hold_blend = (float)clamp_double(command->position_hold_blend + blend_delta,
+                                                               0.0,
+                                                               1.0);
+            command->target_x = state->body_x +
+                                command->position_hold_blend * (command->target_x - state->body_x);
+        }
+    }
+    else
+    {
+        command->position_hold_blend = 0.0f;
+    }
 }
 
 static double measure_leg_length(const mjModel *m, const mjData *d, const ModelMap *map, int left_leg)
@@ -931,10 +982,12 @@ static void clamp_output_to_model(const mjModel *m, const ModelMap *map, SimCont
 
 static void apply_wheel_balance_override(const SimControllerState *state, SimControllerOutput *output)
 {
-    const float pitch_term = g_balance_pitch_kp * state->pitch + g_balance_pitch_kd * state->gyro[1];
+    const float pitch_term = g_balance_pitch_kp * (state->pitch - g_balance_pitch_target) +
+                             g_balance_pitch_kd * state->gyro[1];
     const float pos_term = g_drive_command.mode == DRIVE_FORWARD
                                ? 0.0f
-                               : g_balance_pos_kp * (state->body_x - g_drive_command.target_x);
+                               : g_balance_pos_kp * g_drive_command.position_hold_blend *
+                                     (state->body_x - g_drive_command.target_x);
     const float vel_term = g_balance_vel_kd * (state->body_v - g_drive_command.current_speed);
     const float drive_term = g_drive_command.mode == DRIVE_FORWARD ? (g_balance_drive_kff * g_drive_command.current_speed) : 0.0f;
     const float yaw_term = g_drive_command.yaw_lock
@@ -1050,6 +1103,8 @@ static void step_controller(const mjModel *m,
             SimController_SetMode(CHASSIS_SAFE);
             if (switched_to_safe != 0 && *switched_to_safe == 0)
             {
+                g_drive_command.hold_position_pending = 1;
+                g_drive_command.position_hold_blend = 0.0f;
                 printf("Switch STAND_UP -> SAFE at t=%6.3f\n", d->time);
                 fflush(stdout);
                 *switched_to_safe = 1;
@@ -1064,7 +1119,8 @@ static void step_controller(const mjModel *m,
                                  g_drive_command.yaw_lock ? g_drive_command.yaw_hold : 0.0f);
         SimController_Step((float)m->opt.timestep);
         SimController_GetOutput(&output);
-        if (g_use_wheel_balance_override && chassis_move.mode == CHASSIS_SAFE)
+        if (g_use_wheel_balance_override &&
+            (chassis_move.mode == CHASSIS_SAFE || chassis_move.mode == CHASSIS_STAND_UP))
         {
             apply_wheel_balance_override(&state, &output);
         }
@@ -1091,14 +1147,20 @@ static void step_controller(const mjModel *m,
         const double wheel_left = measure_leg_length(m, d, map, 1);
         const double wheel_right = measure_leg_length(m, d, map, 0);
 
-        printf("t=%6.3f drive=%s vx_ref=% .3f x_ref=% .3f pos=[% .3f % .3f % .3f] rpy=[% .3f % .3f % .3f] "
+        printf("t=%6.3f drive=%s keys=[F:%d B:%d U:%d D:%d] vx_ref=% .3f x_ref=% .3f pos_hold=% .2f leg_ref=% .3f pos=[% .3f % .3f % .3f] rpy=[% .3f % .3f % .3f] "
                "vmcL0=[% .3f % .3f] siteL=[% .3f % .3f] wheelL=[% .3f % .3f] "
                "phi1=[% .3f % .3f] phi4=[% .3f % .3f] "
                "u=[% .2f % .2f % .2f % .2f | % .2f % .2f]\n",
                d->time,
                drive_command_name(&g_drive_command),
+               g_key_forward,
+               g_key_backward,
+               g_key_leg_up,
+               g_key_leg_down,
                g_drive_command.current_speed,
                g_drive_command.target_x,
+               g_drive_command.position_hold_blend,
+               g_drive_command.leg_set,
                state.body_x,
                state.body_y,
                state.body_z,
@@ -1211,7 +1273,7 @@ static int run_viewer(mjModel *m,
         double now = glfwGetTime();
         double elapsed = now - last_wall;
         last_wall = now;
-        sync_keyboard_drive_command(window);
+        sync_keyboard_drive_command(window, elapsed);
 
         if (!g_paused && !freeze_init)
         {
@@ -1316,6 +1378,66 @@ int main(int argc, char **argv)
         {
             g_use_wheel_balance_override = 0;
         }
+        else if ((strcmp(argv[i], "--override-pitch-kp") == 0 ||
+                  strcmp(argv[i], "--stand-pitch-kp") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_pitch_kp = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-pitch-target") == 0 ||
+                  strcmp(argv[i], "--stand-pitch-target") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_pitch_target = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-pitch-kd") == 0 ||
+                  strcmp(argv[i], "--stand-pitch-kd") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_pitch_kd = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-pos-kp") == 0 ||
+                  strcmp(argv[i], "--stand-pos-kp") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_pos_kp = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-vel-kd") == 0 ||
+                  strcmp(argv[i], "--stand-vel-kd") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_vel_kd = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-pos-ramp-time") == 0 ||
+                  strcmp(argv[i], "--stand-pos-ramp-time") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_pos_ramp_time = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-drive-kff") == 0 ||
+                  strcmp(argv[i], "--stand-drive-kff") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_drive_kff = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-yaw-kp") == 0 ||
+                  strcmp(argv[i], "--stand-yaw-kp") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_yaw_kp = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-yaw-kd") == 0 ||
+                  strcmp(argv[i], "--stand-yaw-kd") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_yaw_kd = (float)atof(argv[++i]);
+        }
+        else if ((strcmp(argv[i], "--override-wheel-limit") == 0 ||
+                  strcmp(argv[i], "--stand-wheel-limit") == 0) &&
+                 i + 1 < argc)
+        {
+            g_balance_wheel_limit = (float)atof(argv[++i]);
+        }
         else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc)
         {
             const char *mode = argv[++i];
@@ -1417,6 +1539,7 @@ int main(int argc, char **argv)
     g_drive_command.current_speed = 0.0f;
     g_drive_command.leg_set = INIT_LEG_LENGTH;
     g_drive_command.roll_set = INIT_ROLL;
+    g_drive_command.position_hold_blend = start_mode == CHASSIS_STAND_UP ? 0.0f : 1.0f;
     g_drive_command.hold_position_pending = 1;
     g_drive_command.hold_yaw_pending = 1;
     printf("Drive mode: %s | forward_speed=%.3f | yaw_lock=%d | wheel_sign=[%.0f %.0f] | wheel_override=%d\n",
@@ -1426,6 +1549,17 @@ int main(int argc, char **argv)
            g_wheel_ctrl_sign[0],
            g_wheel_ctrl_sign[1],
            g_use_wheel_balance_override);
+    printf("Wheel override gains: pitch_target=%.3f pitch_kp=%.3f pitch_kd=%.3f pos_kp=%.3f vel_kd=%.3f pos_ramp=%.3f drive_kff=%.3f yaw_kp=%.3f yaw_kd=%.3f limit=%.3f\n",
+           g_balance_pitch_target,
+           g_balance_pitch_kp,
+           g_balance_pitch_kd,
+           g_balance_pos_kp,
+           g_balance_vel_kd,
+           g_balance_pos_ramp_time,
+           g_balance_drive_kff,
+           g_balance_yaw_kp,
+           g_balance_yaw_kd,
+           g_balance_wheel_limit);
     if (start_mode == CHASSIS_STAND_UP && standup_time >= 0.0)
     {
         printf("Start in STAND_UP, auto switch to SAFE after %.3f s.\n", standup_time);

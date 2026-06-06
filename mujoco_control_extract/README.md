@@ -15,7 +15,14 @@ mujoco_control_extract/sim/models/wheel_leg_urdf4_self_mesh_all.xml
 先编译：
 
 ```bash
+cmake -S mujoco_control_extract/sim -B mujoco_control_extract/build
 cmake --build mujoco_control_extract/build --target mujoco_bridge
+```
+
+默认会优先查找 `third_party/mujoco`。如果 MuJoCo SDK 放在别的位置，可以这样指定：
+
+```bash
+cmake -DMUJOCO_ROOT=/path/to/mujoco -S mujoco_control_extract/sim -B mujoco_control_extract/build
 ```
 
 推荐 GUI 启动命令：

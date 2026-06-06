@@ -150,14 +150,19 @@ void SimController_GetOutput(SimControllerOutput *output)
     switch (chassis_move.mode)
     {
     case CHASSIS_STAND_UP:
-        output->joint_torque[0] = sim_mit_torque(left.position_set[0], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+        // MuJoCo ground-init is already upright. During the timed STAND_UP
+        // window, use normal VMC support so the closed-chain leg does not
+        // drift into the folded branch before switching to SAFE.
+        output->joint_torque[0] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[1],
                                                  chassis_move.joint_motor[0]);
-        output->joint_torque[1] = sim_mit_torque(left.position_set[1], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+        output->joint_torque[1] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[0],
                                                  chassis_move.joint_motor[1]);
-        output->joint_torque[2] = sim_mit_torque(right.position_set[0], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+        output->joint_torque[2] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -right.torque_set[0],
                                                  chassis_move.joint_motor[2]);
-        output->joint_torque[3] = sim_mit_torque(right.position_set[1], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
+        output->joint_torque[3] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -right.torque_set[1],
                                                  chassis_move.joint_motor[3]);
+        output->wheel_torque[0] = 0.0f;
+        output->wheel_torque[1] = 0.0f;
         break;
 
     case CHASSIS_CALIBRATE:
@@ -199,8 +204,7 @@ void SimController_GetOutput(SimControllerOutput *output)
         break;
     }
 
-    if (chassis_move.mode == CHASSIS_STAND_UP ||
-        chassis_move.mode == CHASSIS_CALIBRATE)
+    if (chassis_move.mode == CHASSIS_CALIBRATE)
     {
         output->wheel_torque[0] = left.wheel_T;
         output->wheel_torque[1] = right.wheel_T;
