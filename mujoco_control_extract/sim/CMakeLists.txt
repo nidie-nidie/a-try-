@@ -41,6 +41,7 @@ target_link_libraries(rm_controller PUBLIC m)
 
 add_executable(mujoco_bridge
     "${CMAKE_CURRENT_LIST_DIR}/main_mujoco.c"
+    "${CMAKE_CURRENT_LIST_DIR}/jump_telemetry.c"
 )
 
 target_compile_definitions(mujoco_bridge PRIVATE SIM_MUJOCO)

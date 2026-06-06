@@ -36,7 +36,24 @@ void SimController_Init(void);
 void SimController_SetStandL0Pitch(float l0_pitch);
 void SimController_SetState(const SimControllerState *state);
 void SimController_SetCommand(float v_set, float x_set, float leg_set, float roll_set, float yaw_set);
+void SimController_SetDriveContext(int drive_forward, float position_hold_blend, int yaw_lock);
+void SimController_SetJumpThrust(float thrust_ff);
+void SimController_SetJumpPitchTp(float target, float kp, float kd, float limit);
+void SimController_SetJumpCompression(int enabled,
+                                      float target,
+                                      float rate,
+                                      float support_scale,
+                                      float tolerance,
+                                      float hold_time,
+                                      float timeout);
+void SimController_SetJumpLegSwing(float offset, float kp, float kd, float limit);
+void SimController_SetJumpExtendEndMargin(float margin);
+void SimController_SetAirbornePoseTarget(const float joint_pos[4]);
+void SimController_SetAirbornePoseGains(float kp, float kd, float torque_limit);
+void SimController_SetAirborne(int airborne);
 void SimController_SetMode(int mode);
+int SimController_RequestJump(void);
+int SimController_IsJumping(void);
 void SimController_Step(float dt);
 void SimController_GetOutput(SimControllerOutput *output);
 

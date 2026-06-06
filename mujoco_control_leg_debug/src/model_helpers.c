@@ -414,7 +414,7 @@ void leg_debug_update_target_vmc(LegDebugState *state)
     // 调用 VMC_init 函数来初始化这两个结构体，设置它们的默认值和参数
     VMC_init(&left);
     VMC_init(&right);
-    // 
+    // 把target_q中的关节角转换成 vmc 结构体中的 phi1 和 phi4，然后用这些杆长进行后面的 vmc 正解进行计算
     left.phi4 = (float)leg_debug_joint_qpos_to_phi(state->target_q[LEG_DEBUG_JOINT_LEFT_FRONT],
                                                     LEG_DEBUG_PARAM_J0_ANGLE_OFFSET,
                                                     LEG_DEBUG_PARAM_J0_DIRECTION);
@@ -427,7 +427,7 @@ void leg_debug_update_target_vmc(LegDebugState *state)
     right.phi4 = (float)leg_debug_joint_qpos_to_phi(state->target_q[LEG_DEBUG_JOINT_RIGHT_FRONT],
                                                      LEG_DEBUG_PARAM_J3_ANGLE_OFFSET,
                                                      LEG_DEBUG_PARAM_J3_DIRECTION);
-
+                                                     
     VMC_calc_1(&left, 0.0f, 0.0f, 0.001f);
     VMC_calc_1(&right, 0.0f, 0.0f, 0.001f);
 

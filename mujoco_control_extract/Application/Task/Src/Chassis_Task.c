@@ -35,6 +35,23 @@ PID_Info_TypeDef roll_pid;
 PID_Info_TypeDef tp_pid;
 PID_Info_TypeDef turn_pid;
 uint32_t CHASS_FSM_TIME = 3; // 3ms的底盘控制周期，对齐底盘控制频率
+float mujoco_jump_thrust_ff = MUJOCO_JUMP_THRUST_FF;
+float mujoco_jump_pitch_target = MUJOCO_JUMP_PITCH_TARGET;
+float mujoco_jump_pitch_tp_kp = MUJOCO_JUMP_PITCH_TP_KP;
+float mujoco_jump_pitch_tp_kd = MUJOCO_JUMP_PITCH_TP_KD;
+float mujoco_jump_pitch_tp_limit = MUJOCO_JUMP_PITCH_TP_LIMIT;
+float mujoco_jump_compress_l0_set = INIT_LEG_LENGTH;
+float mujoco_jump_compress_target = MUJOCO_JUMP_COMPRESS_TARGET;
+float mujoco_jump_compress_rate = MUJOCO_JUMP_COMPRESS_RATE;
+float mujoco_jump_compress_support_scale = MUJOCO_JUMP_COMPRESS_SUPPORT_SCALE;
+float mujoco_jump_compress_tolerance = MUJOCO_JUMP_COMPRESS_TOLERANCE;
+float mujoco_jump_compress_hold_time = MUJOCO_JUMP_COMPRESS_HOLD_TIME;
+float mujoco_jump_compress_timeout = MUJOCO_JUMP_COMPRESS_TIMEOUT;
+float mujoco_jump_leg_swing_offset = MUJOCO_JUMP_LEG_SWING_OFFSET;
+float mujoco_jump_leg_swing_kp = MUJOCO_JUMP_LEG_SWING_KP;
+float mujoco_jump_leg_swing_kd = MUJOCO_JUMP_LEG_SWING_KD;
+float mujoco_jump_leg_swing_limit = MUJOCO_JUMP_LEG_SWING_LIMIT;
+float mujoco_jump_extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN;
 
 void mySaturate(float *in, float min, float max)
 {

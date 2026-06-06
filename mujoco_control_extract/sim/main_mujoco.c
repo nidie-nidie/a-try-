@@ -9,6 +9,7 @@
 #include "rm_third_party/mujoco.h"
 
 #include "Chassis_Task.h"
+#include "jump_telemetry.h"
 #include "robot_param.h"
 
 typedef struct
@@ -32,6 +33,7 @@ typedef enum
 {
     DRIVE_STAND = 0,
     DRIVE_FORWARD = 1,
+    DRIVE_JUMP = 2,
 } DriveMode;
 
 typedef struct
@@ -65,6 +67,40 @@ static int g_key_leg_up = 0;
 static int g_key_leg_down = 0;
 static double g_last_x = 0.0;
 static double g_last_y = 0.0;
+static double g_body_z_min = 1.0e9;
+static double g_body_z_max = -1.0e9;
+static int g_body_z_range_valid = 0;
+static double g_wheel_clearance_min = 1.0e9;
+static double g_wheel_clearance_max = -1.0e9;
+static double g_airborne_time = 0.0;
+static double g_airborne_current_duration = 0.0;
+static double g_airborne_max_duration = 0.0;
+static float g_airborne_abs_roll_max = 0.0f;
+static float g_airborne_abs_pitch_max = 0.0f;
+static float g_airborne_abs_yaw_error_max = 0.0f;
+static float g_airborne_rpy_last_error[3];
+static int g_airborne_metrics_valid = 0;
+static float g_xml_initial_rpy[3];
+static mjtNum *g_xml_initial_qpos = 0;
+static double g_airborne_full_pose_best_rms = 1.0e9;
+static double g_airborne_full_pose_last_rms = 0.0;
+static double g_airborne_full_pose_max_abs = 0.0;
+static float g_airborne_pose_target[4];
+static float g_airborne_joint_abs_max[4];
+static float g_airborne_joint_last_error[4];
+static float g_airborne_joint_best_error[4];
+static double g_airborne_joint_error_sq_sum = 0.0;
+static double g_airborne_joint_best_rms = 1.0e9;
+static int g_airborne_joint_error_samples = 0;
+static double g_jump_attitude_time = 0.0;
+static double g_jump_pitch_min_time = 0.0;
+static double g_jump_pitch_max_time = 0.0;
+static float g_jump_abs_roll_max = 0.0f;
+static float g_jump_abs_pitch_max = 0.0f;
+static float g_jump_pitch_min = 0.0f;
+static float g_jump_pitch_max = 0.0f;
+static int g_jump_attitude_active = 0;
+static int g_jump_attitude_valid = 0;
 static mjtNum g_joint_ctrl_sign[4] = {1.0, 1.0, 1.0, 1.0};
 static mjtNum g_wheel_ctrl_sign[2] = {1.0, 1.0};
 static int g_use_wheel_balance_override = 1;
@@ -75,10 +111,38 @@ static float g_balance_pos_kp = 65.0f;
 static float g_balance_vel_kd = 32.0f;
 static float g_balance_pos_ramp_time = 2.0f;
 static float g_balance_drive_kff = 100.0f;
+static double g_auto_stop_time = -1.0;
+static double g_auto_jump_time = -1.0;
+static float g_jump_thrust_ff = MUJOCO_JUMP_THRUST_FF;
+static float g_jump_pitch_wheel_kp = MUJOCO_JUMP_PITCH_WHEEL_KP;
+static float g_jump_pitch_wheel_kd = MUJOCO_JUMP_PITCH_WHEEL_KD;
+static float g_jump_pitch_wheel_limit = MUJOCO_JUMP_PITCH_WHEEL_LIMIT;
+static float g_jump_pitch_target = MUJOCO_JUMP_PITCH_TARGET;
+static float g_jump_pitch_offset = 0.0f;
+static int g_jump_pitch_target_overridden = 0;
+static float g_jump_pitch_tp_kp = MUJOCO_JUMP_PITCH_TP_KP;
+static float g_jump_pitch_tp_kd = MUJOCO_JUMP_PITCH_TP_KD;
+static float g_jump_pitch_tp_limit = MUJOCO_JUMP_PITCH_TP_LIMIT;
+static int g_jump_compression_enabled = 1;
+static float g_jump_compress_target = MUJOCO_JUMP_COMPRESS_TARGET;
+static float g_jump_compress_rate = MUJOCO_JUMP_COMPRESS_RATE;
+static float g_jump_compress_support_scale = MUJOCO_JUMP_COMPRESS_SUPPORT_SCALE;
+static float g_jump_compress_tolerance = MUJOCO_JUMP_COMPRESS_TOLERANCE;
+static float g_jump_compress_hold_time = MUJOCO_JUMP_COMPRESS_HOLD_TIME;
+static float g_jump_compress_timeout = MUJOCO_JUMP_COMPRESS_TIMEOUT;
+static float g_jump_leg_swing_offset = MUJOCO_JUMP_LEG_SWING_OFFSET;
+static float g_jump_leg_swing_kp = MUJOCO_JUMP_LEG_SWING_KP;
+static float g_jump_leg_swing_kd = MUJOCO_JUMP_LEG_SWING_KD;
+static float g_jump_leg_swing_limit = MUJOCO_JUMP_LEG_SWING_LIMIT;
+static float g_jump_extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN;
+static float g_jump_tuck_kp = MUJOCO_JUMP_TUCK_KP;
+static float g_jump_tuck_kd = MUJOCO_JUMP_TUCK_KD;
+static float g_jump_tuck_torque_limit = MUJOCO_JUMP_TUCK_TORQUE_LIMIT;
 static float g_balance_yaw_kp = 1.2f;
 static float g_balance_yaw_kd = 0.25f;
 static float g_balance_wheel_limit = 35.0f;
 static float g_keyboard_leg_rate = 0.04f;
+static JumpTelemetry *g_jump_telemetry = 0;
 static DriveCommand g_drive_command = {
     .mode = DRIVE_STAND,
     .leg_set = INIT_LEG_LENGTH,
@@ -208,6 +272,10 @@ static double clamp_double(double value, double min_value, double max_value)
 
 static const char *drive_command_name(const DriveCommand *command)
 {
+    if (command->mode == DRIVE_JUMP)
+    {
+        return "jump";
+    }
     if (command->mode == DRIVE_FORWARD)
     {
         return command->forward_speed < 0.0f ? "backward" : "forward";
@@ -228,7 +296,7 @@ static void queue_drive_mode(DriveCommand *command, DriveMode mode)
         const DriveMode previous_mode = command->mode;
         command->mode = mode;
         command->hold_position_pending = 1;
-        if (mode == DRIVE_FORWARD || previous_mode == DRIVE_FORWARD)
+        if (mode == DRIVE_FORWARD || previous_mode == DRIVE_FORWARD || mode == DRIVE_JUMP || previous_mode == DRIVE_JUMP)
         {
             command->position_hold_blend = 0.0f;
         }
@@ -254,13 +322,34 @@ static void request_drive_speed(DriveCommand *command, float desired_speed)
     command->forward_speed = desired_speed;
 }
 
+static void request_jump(DriveCommand *command, double event_time)
+{
+    if (SimController_RequestJump())
+    {
+        g_jump_attitude_time = 0.0;
+        g_jump_pitch_min_time = event_time;
+        g_jump_pitch_max_time = event_time;
+        g_jump_abs_roll_max = 0.0f;
+        g_jump_abs_pitch_max = 0.0f;
+        g_jump_pitch_min = 0.0f;
+        g_jump_pitch_max = 0.0f;
+        g_jump_attitude_active = 1;
+        g_jump_attitude_valid = 1;
+        queue_drive_mode(command, DRIVE_JUMP);
+        printf("Drive mode -> jump at t=%6.3f\n", event_time);
+        fflush(stdout);
+    }
+}
+
 static void sync_keyboard_drive_command(GLFWwindow *window, double dt)
 {
+    static int jump_was_down = 0;
     const int forward_down = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ||
                              glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
     const int backward_down = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
     const int leg_up_down = glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
     const int leg_down_down = glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
+    const int jump_down = glfwGetKey(window, GLFW_KEY_J) == GLFW_PRESS;
     const char *before = drive_command_name(&g_drive_command);
     float desired_speed = 0.0f;
 
@@ -269,7 +358,17 @@ static void sync_keyboard_drive_command(GLFWwindow *window, double dt)
     g_key_leg_up = leg_up_down;
     g_key_leg_down = leg_down_down;
 
-    if (forward_down && !backward_down)
+    if (jump_down && !jump_was_down)
+    {
+        request_jump(&g_drive_command, g_data ? g_data->time : 0.0);
+    }
+    jump_was_down = jump_down;
+
+    if (g_drive_command.mode == DRIVE_JUMP)
+    {
+        desired_speed = 0.0f;
+    }
+    else if (forward_down && !backward_down)
     {
         desired_speed = drive_speed_magnitude(&g_drive_command);
     }
@@ -278,7 +377,10 @@ static void sync_keyboard_drive_command(GLFWwindow *window, double dt)
         desired_speed = -drive_speed_magnitude(&g_drive_command);
     }
 
-    request_drive_speed(&g_drive_command, desired_speed);
+    if (g_drive_command.mode != DRIVE_JUMP)
+    {
+        request_drive_speed(&g_drive_command, desired_speed);
+    }
     if (leg_up_down && !leg_down_down)
     {
         g_drive_command.leg_set += (float)dt * g_keyboard_leg_rate;
@@ -775,6 +877,233 @@ static void update_drive_command(DriveCommand *command, const SimControllerState
     }
 }
 
+static void update_body_z_range(const SimControllerState *state)
+{
+    if (!g_body_z_range_valid)
+    {
+        g_body_z_min = state->body_z;
+        g_body_z_max = state->body_z;
+        g_body_z_range_valid = 1;
+        return;
+    }
+    if (state->body_z < g_body_z_min)
+    {
+        g_body_z_min = state->body_z;
+    }
+    if (state->body_z > g_body_z_max)
+    {
+        g_body_z_max = state->body_z;
+    }
+}
+
+static void measure_wheel_clearance(const mjModel *m, const mjData *d, const ModelMap *map, double *min_clearance, double *max_clearance)
+{
+    const int left_wheel_body = m->jnt_bodyid[map->wheel[0].id];
+    const int right_wheel_body = m->jnt_bodyid[map->wheel[1].id];
+    const double left_clearance = d->xpos[3 * left_wheel_body + 2] - WHEEL_RADIUS;
+    const double right_clearance = d->xpos[3 * right_wheel_body + 2] - WHEEL_RADIUS;
+
+    *min_clearance = fmin(left_clearance, right_clearance);
+    *max_clearance = fmax(left_clearance, right_clearance);
+}
+
+static int wheels_are_airborne(const mjModel *m, const mjData *d, const ModelMap *map)
+{
+    double min_clearance;
+    double max_clearance;
+
+    measure_wheel_clearance(m, d, map, &min_clearance, &max_clearance);
+    (void)max_clearance;
+    return min_clearance > 0.005;
+}
+
+static void update_airborne_metrics(const mjModel *m, const mjData *d, const ModelMap *map, double dt)
+{
+    const int base_qpos = m->jnt_qposadr[map->base_freejoint];
+    double min_clearance;
+    double max_clearance;
+
+    measure_wheel_clearance(m, d, map, &min_clearance, &max_clearance);
+
+    if (!g_airborne_metrics_valid)
+    {
+        g_wheel_clearance_min = min_clearance;
+        g_wheel_clearance_max = max_clearance;
+        g_airborne_metrics_valid = 1;
+    }
+    else
+    {
+        if (min_clearance < g_wheel_clearance_min)
+        {
+            g_wheel_clearance_min = min_clearance;
+        }
+        if (max_clearance > g_wheel_clearance_max)
+        {
+            g_wheel_clearance_max = max_clearance;
+        }
+    }
+
+    if (min_clearance > 0.015)
+    {
+        float roll;
+        float pitch;
+        float yaw;
+        mjtNum rotated_quat[4];
+        const mjtNum *attitude_quat = &d->qpos[base_qpos + 3];
+
+        g_airborne_time += dt;
+        g_airborne_current_duration += dt;
+        if (g_airborne_current_duration > g_airborne_max_duration)
+        {
+            g_airborne_max_duration = g_airborne_current_duration;
+        }
+
+        if (map->rotate_control_frame)
+        {
+            rotate_quat_into_controller_frame(attitude_quat, rotated_quat);
+            attitude_quat = rotated_quat;
+        }
+        quat_to_euler(attitude_quat, &roll, &pitch, &yaw);
+        const float roll_error = (float)wrap_pi((double)roll - g_xml_initial_rpy[0]);
+        const float pitch_error = (float)wrap_pi((double)pitch - g_xml_initial_rpy[1]);
+        const float yaw_error = (float)wrap_pi((double)yaw - g_xml_initial_rpy[2]);
+        g_airborne_rpy_last_error[0] = roll_error;
+        g_airborne_rpy_last_error[1] = pitch_error;
+        g_airborne_rpy_last_error[2] = yaw_error;
+        if (fabsf(roll_error) > g_airborne_abs_roll_max)
+        {
+            g_airborne_abs_roll_max = fabsf(roll_error);
+        }
+        if (fabsf(pitch_error) > g_airborne_abs_pitch_max)
+        {
+            g_airborne_abs_pitch_max = fabsf(pitch_error);
+        }
+        if (fabsf(yaw_error) > g_airborne_abs_yaw_error_max)
+        {
+            g_airborne_abs_yaw_error_max = fabsf(yaw_error);
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            const float error = (float)d->qpos[map->joint[i].qpos] - g_airborne_pose_target[i];
+            g_airborne_joint_last_error[i] = error;
+            if (fabsf(error) > g_airborne_joint_abs_max[i])
+            {
+                g_airborne_joint_abs_max[i] = fabsf(error);
+            }
+            g_airborne_joint_error_sq_sum += (double)error * (double)error;
+            ++g_airborne_joint_error_samples;
+        }
+        const double sample_rms = sqrt(((double)g_airborne_joint_last_error[0] * g_airborne_joint_last_error[0] +
+                                        (double)g_airborne_joint_last_error[1] * g_airborne_joint_last_error[1] +
+                                        (double)g_airborne_joint_last_error[2] * g_airborne_joint_last_error[2] +
+                                        (double)g_airborne_joint_last_error[3] * g_airborne_joint_last_error[3]) /
+                                       4.0);
+        if (sample_rms < g_airborne_joint_best_rms)
+        {
+            g_airborne_joint_best_rms = sample_rms;
+            memcpy(g_airborne_joint_best_error,
+                   g_airborne_joint_last_error,
+                   sizeof(g_airborne_joint_best_error));
+        }
+        if (g_xml_initial_qpos != 0)
+        {
+            double full_pose_error_sq = 0.0;
+            double full_pose_max_abs = 0.0;
+            int full_pose_joint_count = 0;
+
+            for (int joint = 0; joint < m->njnt; ++joint)
+            {
+                if (m->jnt_type[joint] != mjJNT_HINGE ||
+                    joint == map->wheel[0].id ||
+                    joint == map->wheel[1].id)
+                {
+                    continue;
+                }
+
+                const int qpos = m->jnt_qposadr[joint];
+                const double error = wrap_pi((double)d->qpos[qpos] -
+                                             (double)g_xml_initial_qpos[qpos]);
+                full_pose_error_sq += error * error;
+                if (fabs(error) > full_pose_max_abs)
+                {
+                    full_pose_max_abs = fabs(error);
+                }
+                ++full_pose_joint_count;
+            }
+
+            if (full_pose_joint_count > 0)
+            {
+                g_airborne_full_pose_last_rms =
+                    sqrt(full_pose_error_sq / (double)full_pose_joint_count);
+                if (g_airborne_full_pose_last_rms < g_airborne_full_pose_best_rms)
+                {
+                    g_airborne_full_pose_best_rms = g_airborne_full_pose_last_rms;
+                }
+                if (full_pose_max_abs > g_airborne_full_pose_max_abs)
+                {
+                    g_airborne_full_pose_max_abs = full_pose_max_abs;
+                }
+            }
+        }
+    }
+    else
+    {
+        g_airborne_current_duration = 0.0;
+    }
+}
+
+static void update_jump_attitude_metrics(const SimControllerState *state, double sim_time, double dt)
+{
+    if (!g_jump_attitude_active)
+    {
+        return;
+    }
+
+    g_jump_attitude_time += dt;
+    if (fabsf(state->roll) > g_jump_abs_roll_max)
+    {
+        g_jump_abs_roll_max = fabsf(state->roll);
+    }
+    if (fabsf(state->pitch) > g_jump_abs_pitch_max)
+    {
+        g_jump_abs_pitch_max = fabsf(state->pitch);
+    }
+    if (state->pitch < g_jump_pitch_min)
+    {
+        g_jump_pitch_min = state->pitch;
+        g_jump_pitch_min_time = sim_time;
+    }
+    if (state->pitch > g_jump_pitch_max)
+    {
+        g_jump_pitch_max = state->pitch;
+        g_jump_pitch_max_time = sim_time;
+    }
+}
+
+static void apply_auto_stop_schedule(double sim_time)
+{
+    if (g_auto_stop_time >= 0.0 &&
+        sim_time >= g_auto_stop_time &&
+        g_drive_command.mode == DRIVE_FORWARD)
+    {
+        request_drive_speed(&g_drive_command, 0.0f);
+        g_auto_stop_time = -1.0;
+        printf("Auto stop -> stand at t=%6.3f\n", sim_time);
+        fflush(stdout);
+    }
+}
+
+static void apply_auto_jump_schedule(double sim_time)
+{
+    if (g_auto_jump_time >= 0.0 &&
+        sim_time >= g_auto_jump_time &&
+        !SimController_IsJumping())
+    {
+        request_jump(&g_drive_command, sim_time);
+        g_auto_jump_time = -1.0;
+    }
+}
+
 static double measure_leg_length(const mjModel *m, const mjData *d, const ModelMap *map, int left_leg)
 {
     const int hip_a_joint = left_leg ? map->joint[0].id : map->joint[2].id;
@@ -989,7 +1318,7 @@ static void apply_wheel_balance_override(const SimControllerState *state, SimCon
                                : g_balance_pos_kp * g_drive_command.position_hold_blend *
                                      (state->body_x - g_drive_command.target_x);
     const float vel_term = g_balance_vel_kd * (state->body_v - g_drive_command.current_speed);
-    const float drive_term = g_drive_command.mode == DRIVE_FORWARD ? (g_balance_drive_kff * g_drive_command.current_speed) : 0.0f;
+    const float drive_term = g_balance_drive_kff * g_drive_command.current_speed;
     const float yaw_term = g_drive_command.yaw_lock
                                ? g_balance_yaw_kp * (state->yaw - g_drive_command.yaw_hold) +
                                      g_balance_yaw_kd * state->gyro[2]
@@ -1000,6 +1329,18 @@ static void apply_wheel_balance_override(const SimControllerState *state, SimCon
 
     output->wheel_torque[0] = common - yaw_term;
     output->wheel_torque[1] = common + yaw_term;
+}
+
+static void apply_jump_pitch_wheel_hold(const SimControllerState *state, SimControllerOutput *output)
+{
+    const float pitch_term = g_jump_pitch_wheel_kp * (state->pitch - g_jump_pitch_target) +
+                             g_jump_pitch_wheel_kd * state->gyro[1];
+    const float wheel_torque = (float)clamp_double(pitch_term,
+                                                   -g_jump_pitch_wheel_limit,
+                                                   g_jump_pitch_wheel_limit);
+
+    output->wheel_torque[0] = wheel_torque;
+    output->wheel_torque[1] = wheel_torque;
 }
 
 
@@ -1092,6 +1433,8 @@ static void step_controller(const mjModel *m,
     SimControllerOutput output;
 
     read_state(m, d, map, &state);
+    update_body_z_range(&state);
+    update_jump_attitude_metrics(&state, d->time, m->opt.timestep);
     if (zero_control)
     {
         memset(&output, 0, sizeof(output));
@@ -1110,8 +1453,15 @@ static void step_controller(const mjModel *m,
                 *switched_to_safe = 1;
             }
         }
+        apply_auto_stop_schedule(d->time);
+        apply_auto_jump_schedule(d->time);
+        const int airborne_before_step = wheels_are_airborne(m, d, map);
+        SimController_SetAirborne(airborne_before_step);
         SimController_SetState(&state);
         update_drive_command(&g_drive_command, &state, m->opt.timestep);
+        SimController_SetDriveContext(g_drive_command.mode == DRIVE_FORWARD,
+                                      g_drive_command.position_hold_blend,
+                                      g_drive_command.yaw_lock);
         SimController_SetCommand(g_drive_command.current_speed,
                                  g_drive_command.target_x,
                                  g_drive_command.leg_set,
@@ -1119,10 +1469,29 @@ static void step_controller(const mjModel *m,
                                  g_drive_command.yaw_lock ? g_drive_command.yaw_hold : 0.0f);
         SimController_Step((float)m->opt.timestep);
         SimController_GetOutput(&output);
+        const int airborne = wheels_are_airborne(m, d, map);
+        const int jump_launch_active = chassis_move.jump_flag >= 2 || chassis_move.jump_flag2 >= 2;
+        const int suppress_wheel_balance = jump_launch_active || airborne;
+        if (g_drive_command.mode == DRIVE_JUMP && !SimController_IsJumping())
+        {
+            queue_drive_mode(&g_drive_command, DRIVE_STAND);
+            printf("Drive mode -> stand at t=%6.3f after jump\n", d->time);
+            fflush(stdout);
+        }
         if (g_use_wheel_balance_override &&
+            !suppress_wheel_balance &&
             (chassis_move.mode == CHASSIS_SAFE || chassis_move.mode == CHASSIS_STAND_UP))
         {
             apply_wheel_balance_override(&state, &output);
+        }
+        if (suppress_wheel_balance)
+        {
+            output.wheel_torque[0] = 0.0f;
+            output.wheel_torque[1] = 0.0f;
+        }
+        if (airborne || chassis_move.jump_flag == 3 || chassis_move.jump_flag2 == 3)
+        {
+            apply_jump_pitch_wheel_hold(&state, &output);
         }
         if (zero_wheels)
         {
@@ -1139,6 +1508,44 @@ static void step_controller(const mjModel *m,
     write_output(d, map, &output);
 
     mj_step(m, d);
+    if (g_jump_telemetry != 0)
+    {
+        const int base_qpos = m->jnt_qposadr[map->base_freejoint];
+        double min_clearance = 0.0;
+        double max_clearance = 0.0;
+        double command_torque[6];
+        double applied_torque[6];
+
+        measure_wheel_clearance(m,
+                                d,
+                                map,
+                                &min_clearance,
+                                &max_clearance);
+        (void)max_clearance;
+        for (int actuator = 0; actuator < 6; ++actuator)
+        {
+            const int actuator_id = map->actuator[actuator];
+            command_torque[actuator] = d->ctrl[actuator_id];
+            applied_torque[actuator] = d->actuator_force[actuator_id];
+        }
+        JumpTelemetry_Record(
+            g_jump_telemetry,
+            d->time,
+            d->qpos[base_qpos + 2],
+            min_clearance,
+            command_torque,
+            applied_torque,
+            g_drive_command.mode == DRIVE_JUMP || SimController_IsJumping(),
+            chassis_move.jump_flag > chassis_move.jump_flag2
+                ? chassis_move.jump_flag
+                : chassis_move.jump_flag2,
+            wheels_are_airborne(m, d, map));
+    }
+    update_airborne_metrics(m, d, map, m->opt.timestep);
+    if (g_jump_attitude_active && !SimController_IsJumping() && !wheels_are_airborne(m, d, map))
+    {
+        g_jump_attitude_active = 0;
+    }
 
     if (print_line)
     {
@@ -1147,12 +1554,14 @@ static void step_controller(const mjModel *m,
         const double wheel_left = measure_leg_length(m, d, map, 1);
         const double wheel_right = measure_leg_length(m, d, map, 0);
 
-        printf("t=%6.3f drive=%s keys=[F:%d B:%d U:%d D:%d] vx_ref=% .3f x_ref=% .3f pos_hold=% .2f leg_ref=% .3f pos=[% .3f % .3f % .3f] rpy=[% .3f % .3f % .3f] "
+        printf("t=%6.3f drive=%s jump=[%d %d] keys=[F:%d B:%d U:%d D:%d] vx_ref=% .3f x_ref=% .3f pos_hold=% .2f leg_ref=% .3f pos=[% .3f % .3f % .3f] rpy=[% .3f % .3f % .3f] "
                "vmcL0=[% .3f % .3f] siteL=[% .3f % .3f] wheelL=[% .3f % .3f] "
                "phi1=[% .3f % .3f] phi4=[% .3f % .3f] "
                "u=[% .2f % .2f % .2f % .2f | % .2f % .2f]\n",
                d->time,
                drive_command_name(&g_drive_command),
+               chassis_move.jump_flag2,
+               chassis_move.jump_flag,
                g_key_forward,
                g_key_backward,
                g_key_leg_up,
@@ -1315,6 +1724,7 @@ int main(int argc, char **argv)
     double standup_time = 0.2;
     double sim_time = 100.0;
     const char *init_key_name = "pos_debug_ground";
+    const char *jump_telemetry_prefix = 0;
     for (int i = 1; i < argc; ++i)
     {
         if (strcmp(argv[i], "--headless") == 0)
@@ -1353,6 +1763,121 @@ int main(int argc, char **argv)
         {
             g_drive_command.forward_speed = (float)atof(argv[++i]);
         }
+        else if (strcmp(argv[i], "--auto-stop-time") == 0 && i + 1 < argc)
+        {
+            g_auto_stop_time = atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-at") == 0 && i + 1 < argc)
+        {
+            g_auto_jump_time = atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-telemetry") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                fprintf(stderr,
+                        "--jump-telemetry expects an output path prefix.\n");
+                return 2;
+            }
+            jump_telemetry_prefix = argv[++i];
+        }
+        else if (strcmp(argv[i], "--jump-thrust") == 0 && i + 1 < argc)
+        {
+            g_jump_thrust_ff = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-wheel-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_wheel_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-wheel-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_wheel_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-wheel-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_wheel_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-tp-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_tp_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-target") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_target = (float)atof(argv[++i]);
+            g_jump_pitch_target_overridden = 1;
+        }
+        else if (strcmp(argv[i], "--jump-pitch-offset") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_offset = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-tp-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_tp_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-tp-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_tp_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-skip-compression") == 0)
+        {
+            g_jump_compression_enabled = 0;
+        }
+        else if (strcmp(argv[i], "--jump-compress-target") == 0 && i + 1 < argc)
+        {
+            g_jump_compress_target = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-compress-rate") == 0 && i + 1 < argc)
+        {
+            g_jump_compress_rate = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-compress-support-scale") == 0 && i + 1 < argc)
+        {
+            g_jump_compress_support_scale = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-compress-tolerance") == 0 && i + 1 < argc)
+        {
+            g_jump_compress_tolerance = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-compress-hold") == 0 && i + 1 < argc)
+        {
+            g_jump_compress_hold_time = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-compress-timeout") == 0 && i + 1 < argc)
+        {
+            g_jump_compress_timeout = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-leg-swing-offset") == 0 && i + 1 < argc)
+        {
+            g_jump_leg_swing_offset = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-leg-swing-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_leg_swing_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-leg-swing-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_leg_swing_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-leg-swing-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_leg_swing_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-extend-end-margin") == 0 && i + 1 < argc)
+        {
+            g_jump_extend_end_margin = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-tuck-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_tuck_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-tuck-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_tuck_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-tuck-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_tuck_torque_limit = (float)atof(argv[++i]);
+        }
         else if (strcmp(argv[i], "--drive") == 0 && i + 1 < argc)
         {
             const char *drive = argv[++i];
@@ -1364,9 +1889,14 @@ int main(int argc, char **argv)
             {
                 queue_drive_mode(&g_drive_command, DRIVE_FORWARD);
             }
+            else if (strcmp(drive, "jump") == 0)
+            {
+                queue_drive_mode(&g_drive_command, DRIVE_STAND);
+                g_auto_jump_time = 1.0;
+            }
             else
             {
-                fprintf(stderr, "--drive expects stand or forward.\n");
+                fprintf(stderr, "--drive expects stand, forward, or jump.\n");
                 return 2;
             }
         }
@@ -1534,8 +2064,69 @@ int main(int argc, char **argv)
     {
         print_geometry_debug(m, d, &map, "init");
     }
+    SimControllerState initial_state;
+    read_state(m, d, &map, &initial_state);
+    g_xml_initial_rpy[0] = initial_state.roll;
+    g_xml_initial_rpy[1] = initial_state.pitch;
+    g_xml_initial_rpy[2] = initial_state.yaw;
+    if (!g_jump_pitch_target_overridden)
+    {
+        g_jump_pitch_target = initial_state.pitch + g_jump_pitch_offset;
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        g_airborne_pose_target[i] = initial_state.joint_pos[i];
+    }
+    g_xml_initial_qpos = (mjtNum *)malloc(sizeof(mjtNum) * m->nq);
+    if (g_xml_initial_qpos == 0)
+    {
+        fprintf(stderr, "Failed to allocate XML initial pose snapshot.\n");
+        mj_deleteData(d);
+        mj_deleteModel(m);
+        return 1;
+    }
+    memcpy(g_xml_initial_qpos, d->qpos, sizeof(mjtNum) * m->nq);
+
     SimController_Init();
+    SimController_SetAirbornePoseTarget(g_airborne_pose_target);
+    SimController_SetAirbornePoseGains(g_jump_tuck_kp,
+                                       g_jump_tuck_kd,
+                                       g_jump_tuck_torque_limit);
+    SimController_SetJumpThrust(g_jump_thrust_ff);
+    SimController_SetJumpPitchTp(g_jump_pitch_target,
+                                 g_jump_pitch_tp_kp,
+                                 g_jump_pitch_tp_kd,
+                                 g_jump_pitch_tp_limit);
+    SimController_SetJumpCompression(g_jump_compression_enabled,
+                                     g_jump_compress_target,
+                                     g_jump_compress_rate,
+                                     g_jump_compress_support_scale,
+                                     g_jump_compress_tolerance,
+                                     g_jump_compress_hold_time,
+                                     g_jump_compress_timeout);
+    SimController_SetJumpLegSwing(g_jump_leg_swing_offset,
+                                  g_jump_leg_swing_kp,
+                                  g_jump_leg_swing_kd,
+                                  g_jump_leg_swing_limit);
+    SimController_SetJumpExtendEndMargin(g_jump_extend_end_margin);
     SimController_SetMode(start_mode);
+    if (jump_telemetry_prefix != 0)
+    {
+        g_jump_telemetry = JumpTelemetry_Create(jump_telemetry_prefix);
+        if (g_jump_telemetry == 0)
+        {
+            fprintf(stderr,
+                    "Failed to initialize jump telemetry: %s\n",
+                    jump_telemetry_prefix);
+            free(g_xml_initial_qpos);
+            g_xml_initial_qpos = 0;
+            mj_deleteData(d);
+            mj_deleteModel(m);
+            return 1;
+        }
+        printf("Jump telemetry enabled: %s.[csv|svg]\n",
+               jump_telemetry_prefix);
+    }
     g_drive_command.current_speed = 0.0f;
     g_drive_command.leg_set = INIT_LEG_LENGTH;
     g_drive_command.roll_set = INIT_ROLL;
@@ -1560,13 +2151,116 @@ int main(int argc, char **argv)
            g_balance_yaw_kp,
            g_balance_yaw_kd,
            g_balance_wheel_limit);
+    printf("Jump thrust feedforward: %.3f\n", g_jump_thrust_ff);
+    printf("Jump pitch wheel hold: kp=%.3f kd=%.3f limit=%.3f\n",
+           g_jump_pitch_wheel_kp,
+           g_jump_pitch_wheel_kd,
+           g_jump_pitch_wheel_limit);
+    printf("Jump pitch leg Tp hold: target=%.3f kp=%.3f kd=%.3f limit=%.3f\n",
+           g_jump_pitch_target,
+           g_jump_pitch_tp_kp,
+           g_jump_pitch_tp_kd,
+           g_jump_pitch_tp_limit);
+    printf("Jump compression: enabled=%d target=%.3f rate=%.3f support=%.3f tolerance=%.3f hold=%.3f timeout=%.3f\n",
+           g_jump_compression_enabled,
+           g_jump_compress_target,
+           g_jump_compress_rate,
+           g_jump_compress_support_scale,
+           g_jump_compress_tolerance,
+           g_jump_compress_hold_time,
+           g_jump_compress_timeout);
+    printf("Jump leg swing: offset=%.3f kp=%.3f kd=%.3f limit=%.3f\n",
+           g_jump_leg_swing_offset,
+           g_jump_leg_swing_kp,
+           g_jump_leg_swing_kd,
+           g_jump_leg_swing_limit);
+    printf("Jump extend end margin: %.3f\n", g_jump_extend_end_margin);
+    printf("Jump XML-pose tuck: kp=%.3f kd=%.3f limit=%.3f target=[%.3f %.3f %.3f %.3f]\n",
+           g_jump_tuck_kp,
+           g_jump_tuck_kd,
+           g_jump_tuck_torque_limit,
+           g_airborne_pose_target[0],
+           g_airborne_pose_target[1],
+           g_airborne_pose_target[2],
+           g_airborne_pose_target[3]);
+    printf("XML initial base RPY target: [%.3f %.3f %.3f]\n",
+           g_xml_initial_rpy[0],
+           g_xml_initial_rpy[1],
+           g_xml_initial_rpy[2]);
     if (start_mode == CHASSIS_STAND_UP && standup_time >= 0.0)
     {
         printf("Start in STAND_UP, auto switch to SAFE after %.3f s.\n", standup_time);
     }
 
     int result = headless ? run_headless(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init, start_mode, standup_time) : run_viewer(m, d, &map, sim_time, zero_control, zero_wheels, invert_right_joints, freeze_init, start_mode, standup_time);
+    if (g_body_z_range_valid)
+    {
+        printf("Body z range: min=%.3f max=%.3f rise=%.3f\n",
+               g_body_z_min,
+               g_body_z_max,
+               g_body_z_max - g_body_z_min);
+    }
+    if (g_airborne_metrics_valid)
+    {
+        printf("Wheel clearance: min=%.3f max=%.3f | Airborne: total=%.3f max_span=%.3f max_abs_rpy=[%.3f %.3f %.3f]\n",
+               g_wheel_clearance_min,
+               g_wheel_clearance_max,
+               g_airborne_time,
+               g_airborne_max_duration,
+               g_airborne_abs_roll_max,
+               g_airborne_abs_pitch_max,
+               g_airborne_abs_yaw_error_max);
+        printf("Airborne final XML-base RPY error: [%.4f %.4f %.4f]\n",
+               g_airborne_rpy_last_error[0],
+               g_airborne_rpy_last_error[1],
+               g_airborne_rpy_last_error[2]);
+        if (g_airborne_joint_error_samples > 0)
+        {
+            printf("Airborne XML-pose joint error: rms=%.4f max_abs=[%.4f %.4f %.4f %.4f]\n",
+                   sqrt(g_airborne_joint_error_sq_sum / (double)g_airborne_joint_error_samples),
+                   g_airborne_joint_abs_max[0],
+                   g_airborne_joint_abs_max[1],
+                   g_airborne_joint_abs_max[2],
+                   g_airborne_joint_abs_max[3]);
+            printf("Airborne XML-pose convergence: best_rms=%.4f best=[%.4f %.4f %.4f %.4f] last=[%.4f %.4f %.4f %.4f]\n",
+                   g_airborne_joint_best_rms,
+                   g_airborne_joint_best_error[0],
+                   g_airborne_joint_best_error[1],
+                   g_airborne_joint_best_error[2],
+                   g_airborne_joint_best_error[3],
+                   g_airborne_joint_last_error[0],
+                   g_airborne_joint_last_error[1],
+                   g_airborne_joint_last_error[2],
+                   g_airborne_joint_last_error[3]);
+            printf("Airborne full-link XML shape: best_rms=%.4f last_rms=%.4f max_abs=%.4f\n",
+                   g_airborne_full_pose_best_rms,
+                   g_airborne_full_pose_last_rms,
+                   g_airborne_full_pose_max_abs);
+        }
+    }
+    if (g_jump_attitude_valid)
+    {
+        printf("Jump attitude: duration=%.3f max_abs_rp=[%.3f %.3f] pitch_range=[%.3f@%.3f %.3f@%.3f]\n",
+               g_jump_attitude_time,
+               g_jump_abs_roll_max,
+               g_jump_abs_pitch_max,
+               g_jump_pitch_min,
+               g_jump_pitch_min_time,
+               g_jump_pitch_max,
+               g_jump_pitch_max_time);
+    }
+    if (g_jump_telemetry != 0)
+    {
+        if (!JumpTelemetry_Write(g_jump_telemetry))
+        {
+            result = result == 0 ? 1 : result;
+        }
+        JumpTelemetry_Destroy(g_jump_telemetry);
+        g_jump_telemetry = 0;
+    }
 
+    free(g_xml_initial_qpos);
+    g_xml_initial_qpos = 0;
     mj_deleteData(d);
     mj_deleteModel(m);
     return result;

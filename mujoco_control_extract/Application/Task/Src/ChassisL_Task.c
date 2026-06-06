@@ -154,26 +154,16 @@ void ChassisL_control_loop(void)
     if (chassis_move.jump_flag2 == 1 || chassis_move.jump_flag2 == 2 || chassis_move.jump_flag2 == 3)
     {
         if (chassis_move.jump_flag2 == 1)
-        {                                                                                                         // 压缩阶段
-            left.F0 = BODY_GRAVITY / arm_cos_f32(left.theta) + PID_Calculate(&legl_pid, MIN_LEG_LENGTH, left.L0); // 前馈+pd
-
-            if (left.L0 < MIN_LEG_LENGTH + 0.02f)
-            {
-                jump_time_l++;
-            }
-            if (jump_time_l >= 10 && jump_time_r >= 10)
-            {
-                jump_time_l = 0;
-                jump_time_r = 0;
-                chassis_move.jump_flag2 = 2;
-                chassis_move.jump_flag = 2; // 压缩完毕进入上升加速阶段
-            }
+        { // 平滑压缩和保持由 sim_adapter 统一协调，左右腿共用同一个目标
+            left.F0 = mujoco_jump_compress_support_scale * BODY_GRAVITY / arm_cos_f32(left.theta) +
+                      PID_Calculate(&legl_pid, mujoco_jump_compress_l0_set, left.L0);
         }
         else if (chassis_move.jump_flag2 == 2)
         {                                                                                                         // 上升加速阶段
             left.F0 = BODY_GRAVITY / arm_cos_f32(left.theta) + PID_Calculate(&legl_pid, MAX_LEG_LENGTH, left.L0); // 前馈+pd
+            left.F0 += mujoco_jump_thrust_ff;
 
-            if (left.L0 > MAX_LEG_LENGTH - 0.03f)
+            if (left.L0 > MAX_LEG_LENGTH - mujoco_jump_extend_end_margin)
             {
                 jump_time_l++;
             }
@@ -242,6 +232,24 @@ void ChassisL_control_loop(void)
     {
         left.Tp = 0.0f;
         left.F0 = 0.0f;
+    }
+
+    if (chassis_move.jump_flag2 != 0 || chassis_move.jump_flag != 0)
+    {
+        float jump_pitch_tp = mujoco_jump_pitch_tp_kp * (INS.Pitch - mujoco_jump_pitch_target) +
+                              mujoco_jump_pitch_tp_kd * INS.Gyro[1];
+        mySaturate(&jump_pitch_tp, -mujoco_jump_pitch_tp_limit, mujoco_jump_pitch_tp_limit);
+        left.Tp -= jump_pitch_tp;
+    }
+    if (chassis_move.jump_flag2 == 2)
+    {
+        float jump_leg_swing_tp =
+            mujoco_jump_leg_swing_kp * (INIT_L0_PITCH + mujoco_jump_leg_swing_offset - left.phi0) -
+            mujoco_jump_leg_swing_kd * left.d_phi0;
+        mySaturate(&jump_leg_swing_tp,
+                   -mujoco_jump_leg_swing_limit,
+                   mujoco_jump_leg_swing_limit);
+        left.Tp += jump_leg_swing_tp;
     }
 
     VMC_calc_2(&left); // 计算期望的关节输出力矩
