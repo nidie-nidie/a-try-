@@ -24,6 +24,7 @@ typedef struct
     float body_y;             // m
     float body_z;             // m
     float body_v;             // m/s
+    float body_z_vel;         // m/s
 } SimControllerState;
 
 typedef struct
@@ -48,9 +49,29 @@ void SimController_SetJumpCompression(int enabled,
                                       float timeout);
 void SimController_SetJumpLegSwing(float offset, float kp, float kd, float limit);
 void SimController_SetJumpExtendEndMargin(float margin);
+void SimController_SetJumpLandingLegLengths(float preland_l0, float buffer_l0);
+void SimController_SetJumpPrelandClearance(float clearance);
+void SimController_SetJumpPrelandPidScale(float pid_scale);
+void SimController_SetJumpLandingDynamics(float preland_rate,
+                                          float buffer_rate,
+                                          float buffer_support_scale,
+                                          float buffer_pid_scale);
+void SimController_SetJumpLandingBalance(float roll_kp,
+                                         float roll_kd,
+                                         float contact_kp,
+                                         float limit);
+void SimController_SetJumpLandingL0Balance(float roll_kp,
+                                           float roll_kd,
+                                           float limit);
+void SimController_SetJumpLandingClearanceBalance(float kp,
+                                                  float rate,
+                                                  float limit);
 void SimController_SetAirbornePoseTarget(const float joint_pos[4]);
 void SimController_SetAirbornePoseGains(float kp, float kd, float torque_limit);
 void SimController_SetAirborne(int airborne);
+void SimController_SetFlightObservation(int airborne,
+                                        const float wheel_clearance_m[2],
+                                        const float wheel_contact_normal_n[2]);
 void SimController_SetMode(int mode);
 int SimController_RequestJump(void);
 int SimController_IsJumping(void);

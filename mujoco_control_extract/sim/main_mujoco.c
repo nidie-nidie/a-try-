@@ -26,6 +26,8 @@ typedef struct
     int actuator[6];
     int base_body;
     int base_freejoint;
+    int floor_geom;
+    int base_contact_geom;
     int rotate_control_frame;
 } ModelMap;
 
@@ -50,6 +52,11 @@ typedef struct
     int hold_position_pending;
     int hold_yaw_pending;
 } DriveCommand;
+
+typedef struct
+{
+    double samples[4];
+} SupportForceObserver;
 
 static mjModel *g_model = 0;
 static mjData *g_data = 0;
@@ -101,6 +108,8 @@ static float g_jump_pitch_min = 0.0f;
 static float g_jump_pitch_max = 0.0f;
 static int g_jump_attitude_active = 0;
 static int g_jump_attitude_valid = 0;
+static double g_jump_base_contact_peak_n = 0.0;
+static double g_jump_base_contact_peak_time = 0.0;
 static mjtNum g_joint_ctrl_sign[4] = {1.0, 1.0, 1.0, 1.0};
 static mjtNum g_wheel_ctrl_sign[2] = {1.0, 1.0};
 static int g_use_wheel_balance_override = 1;
@@ -109,7 +118,7 @@ static float g_balance_pitch_kp = 75.0f;
 static float g_balance_pitch_kd = 18.0f;
 static float g_balance_pos_kp = 65.0f;
 static float g_balance_vel_kd = 32.0f;
-static float g_balance_pos_ramp_time = 2.0f;
+static float g_balance_pos_ramp_time = 0.5f;
 static float g_balance_drive_kff = 100.0f;
 static double g_auto_stop_time = -1.0;
 static double g_auto_jump_time = -1.0;
@@ -117,9 +126,19 @@ static float g_jump_thrust_ff = MUJOCO_JUMP_THRUST_FF;
 static float g_jump_pitch_wheel_kp = MUJOCO_JUMP_PITCH_WHEEL_KP;
 static float g_jump_pitch_wheel_kd = MUJOCO_JUMP_PITCH_WHEEL_KD;
 static float g_jump_pitch_wheel_limit = MUJOCO_JUMP_PITCH_WHEEL_LIMIT;
+static float g_jump_takeoff_yaw_kp = MUJOCO_JUMP_TAKEOFF_YAW_KP;
+static float g_jump_takeoff_yaw_kd = MUJOCO_JUMP_TAKEOFF_YAW_KD;
+static float g_jump_takeoff_yaw_limit = MUJOCO_JUMP_TAKEOFF_YAW_LIMIT;
+static float g_jump_landing_yaw_kp = MUJOCO_JUMP_LANDING_YAW_KP;
+static float g_jump_landing_yaw_kd = MUJOCO_JUMP_LANDING_YAW_KD;
+static float g_jump_landing_yaw_limit = MUJOCO_JUMP_LANDING_YAW_LIMIT;
+static int g_jump_landing_yaw_start_phase = MUJOCO_JUMP_LANDING_YAW_START_PHASE;
 static float g_jump_pitch_target = MUJOCO_JUMP_PITCH_TARGET;
-static float g_jump_pitch_offset = 0.0f;
+static float g_jump_pitch_offset = MUJOCO_JUMP_PITCH_OFFSET;
 static int g_jump_pitch_target_overridden = 0;
+static float g_jump_landing_pitch_target = MUJOCO_JUMP_PITCH_TARGET;
+static float g_jump_landing_pitch_offset = MUJOCO_JUMP_LANDING_PITCH_OFFSET;
+static int g_jump_landing_pitch_target_overridden = 0;
 static float g_jump_pitch_tp_kp = MUJOCO_JUMP_PITCH_TP_KP;
 static float g_jump_pitch_tp_kd = MUJOCO_JUMP_PITCH_TP_KD;
 static float g_jump_pitch_tp_limit = MUJOCO_JUMP_PITCH_TP_LIMIT;
@@ -135,6 +154,24 @@ static float g_jump_leg_swing_kp = MUJOCO_JUMP_LEG_SWING_KP;
 static float g_jump_leg_swing_kd = MUJOCO_JUMP_LEG_SWING_KD;
 static float g_jump_leg_swing_limit = MUJOCO_JUMP_LEG_SWING_LIMIT;
 static float g_jump_extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN;
+static float g_jump_preland_clearance = MUJOCO_JUMP_PRELAND_CLEARANCE;
+static float g_jump_preland_l0 = MUJOCO_JUMP_PRELAND_L0;
+static float g_jump_preland_rate = MUJOCO_JUMP_PRELAND_RATE;
+static float g_jump_buffer_l0 = MUJOCO_JUMP_BUFFER_L0;
+static float g_jump_buffer_rate = MUJOCO_JUMP_BUFFER_RATE;
+static float g_jump_buffer_support_scale = MUJOCO_JUMP_BUFFER_SUPPORT_SCALE;
+static float g_jump_buffer_pid_scale = MUJOCO_JUMP_BUFFER_PID_SCALE;
+static float g_jump_preland_pid_scale = MUJOCO_JUMP_PRELAND_PID_SCALE;
+static float g_jump_landing_roll_f0_kp = MUJOCO_JUMP_LANDING_ROLL_F0_KP;
+static float g_jump_landing_roll_f0_kd = MUJOCO_JUMP_LANDING_ROLL_F0_KD;
+static float g_jump_landing_contact_f0_kp = MUJOCO_JUMP_LANDING_CONTACT_F0_KP;
+static float g_jump_landing_balance_f0_limit = MUJOCO_JUMP_LANDING_BALANCE_F0_LIMIT;
+static float g_jump_landing_roll_l0_kp = MUJOCO_JUMP_LANDING_ROLL_L0_KP;
+static float g_jump_landing_roll_l0_kd = MUJOCO_JUMP_LANDING_ROLL_L0_KD;
+static float g_jump_landing_balance_l0_limit = MUJOCO_JUMP_LANDING_BALANCE_L0_LIMIT;
+static float g_jump_landing_clearance_l0_kp = MUJOCO_JUMP_LANDING_CLEARANCE_L0_KP;
+static float g_jump_landing_clearance_l0_rate = MUJOCO_JUMP_LANDING_CLEARANCE_L0_RATE;
+static float g_jump_landing_clearance_l0_limit = MUJOCO_JUMP_LANDING_CLEARANCE_L0_LIMIT;
 static float g_jump_tuck_kp = MUJOCO_JUMP_TUCK_KP;
 static float g_jump_tuck_kd = MUJOCO_JUMP_TUCK_KD;
 static float g_jump_tuck_torque_limit = MUJOCO_JUMP_TUCK_TORQUE_LIMIT;
@@ -143,6 +180,7 @@ static float g_balance_yaw_kd = 0.25f;
 static float g_balance_wheel_limit = 35.0f;
 static float g_keyboard_leg_rate = 0.04f;
 static JumpTelemetry *g_jump_telemetry = 0;
+static SupportForceObserver g_support_force_observer[2];
 static DriveCommand g_drive_command = {
     .mode = DRIVE_STAND,
     .leg_set = INIT_LEG_LENGTH,
@@ -333,6 +371,8 @@ static void request_jump(DriveCommand *command, double event_time)
         g_jump_abs_pitch_max = 0.0f;
         g_jump_pitch_min = 0.0f;
         g_jump_pitch_max = 0.0f;
+        g_jump_base_contact_peak_n = 0.0;
+        g_jump_base_contact_peak_time = event_time;
         g_jump_attitude_active = 1;
         g_jump_attitude_valid = 1;
         queue_drive_mode(command, DRIVE_JUMP);
@@ -438,6 +478,8 @@ static void quat_to_euler(const mjtNum q[4], float *roll, float *pitch, float *y
 static void build_model_map(const mjModel *m, ModelMap *map)
 {
     memset(map, 0, sizeof(*map));
+    map->floor_geom = find_optional_id(m, mjOBJ_GEOM, "floor");
+    map->base_contact_geom = find_optional_id(m, mjOBJ_GEOM, "base_proxy");
     map->rotate_control_frame = 0;
 
     if (find_optional_id(m, mjOBJ_BODY, "base_link") >= 0)
@@ -463,7 +505,7 @@ static void build_model_map(const mjModel *m, ModelMap *map)
 
 
 
-    
+
     if (find_optional_id(m, mjOBJ_BODY, "base") >= 0)
     {
         map->base_body = find_required_id(m, mjOBJ_BODY, "base");
@@ -820,6 +862,7 @@ static void read_state(const mjModel *m, const mjData *d, const ModelMap *map, S
         state->body_x = body_x;
         state->body_y = body_y;
         state->body_z = (float)d->qpos[base_qpos + 2];
+        state->body_z_vel = (float)d->qvel[base_qvel + 2];
 
         rotate_xy_into_controller_frame(d->qvel[base_qvel + 0], d->qvel[base_qvel + 1], &body_v, 0);
         state->body_v = body_v;
@@ -834,6 +877,7 @@ static void read_state(const mjModel *m, const mjData *d, const ModelMap *map, S
         state->body_x = (float)d->qpos[base_qpos + 0];
         state->body_y = (float)d->qpos[base_qpos + 1];
         state->body_z = (float)d->qpos[base_qpos + 2];
+        state->body_z_vel = (float)d->qvel[base_qvel + 2];
         state->body_v = (float)d->qvel[base_qvel + 0];
     }
 }
@@ -896,15 +940,28 @@ static void update_body_z_range(const SimControllerState *state)
     }
 }
 
-static void measure_wheel_clearance(const mjModel *m, const mjData *d, const ModelMap *map, double *min_clearance, double *max_clearance)
+static void measure_wheel_clearances(const mjModel *m,
+                                     const mjData *d,
+                                     const ModelMap *map,
+                                     double clearance[2])
 {
     const int left_wheel_body = m->jnt_bodyid[map->wheel[0].id];
     const int right_wheel_body = m->jnt_bodyid[map->wheel[1].id];
-    const double left_clearance = d->xpos[3 * left_wheel_body + 2] - WHEEL_RADIUS;
-    const double right_clearance = d->xpos[3 * right_wheel_body + 2] - WHEEL_RADIUS;
+    clearance[0] = d->xpos[3 * left_wheel_body + 2] - WHEEL_RADIUS;
+    clearance[1] = d->xpos[3 * right_wheel_body + 2] - WHEEL_RADIUS;
+}
 
-    *min_clearance = fmin(left_clearance, right_clearance);
-    *max_clearance = fmax(left_clearance, right_clearance);
+static void measure_wheel_clearance(const mjModel *m,
+                                    const mjData *d,
+                                    const ModelMap *map,
+                                    double *min_clearance,
+                                    double *max_clearance)
+{
+    double clearance[2];
+    measure_wheel_clearances(m, d, map, clearance);
+
+    *min_clearance = fmin(clearance[0], clearance[1]);
+    *max_clearance = fmax(clearance[0], clearance[1]);
 }
 
 static int wheels_are_airborne(const mjModel *m, const mjData *d, const ModelMap *map)
@@ -915,6 +972,103 @@ static int wheels_are_airborne(const mjModel *m, const mjData *d, const ModelMap
     measure_wheel_clearance(m, d, map, &min_clearance, &max_clearance);
     (void)max_clearance;
     return min_clearance > 0.005;
+}
+
+static void measure_wheel_contact_normal_force(const mjModel *m,
+                                               const mjData *d,
+                                               const ModelMap *map,
+                                               double force_n[2])
+{
+    const int wheel_body[2] = {
+        m->jnt_bodyid[map->wheel[0].id],
+        m->jnt_bodyid[map->wheel[1].id],
+    };
+    force_n[0] = 0.0;
+    force_n[1] = 0.0;
+
+    for (int contact_index = 0; contact_index < d->ncon; ++contact_index)
+    {
+        const mjContact *contact = &d->contact[contact_index];
+        const int body1 = m->geom_bodyid[contact->geom1];
+        const int body2 = m->geom_bodyid[contact->geom2];
+        const int geom1_is_floor =
+            contact->geom1 == map->floor_geom || body1 == 0;
+        const int geom2_is_floor =
+            contact->geom2 == map->floor_geom || body2 == 0;
+
+        for (int wheel = 0; wheel < 2; ++wheel)
+        {
+            if (!((body1 == wheel_body[wheel] && geom2_is_floor) ||
+                  (body2 == wheel_body[wheel] && geom1_is_floor)))
+            {
+                continue;
+            }
+
+            mjtNum contact_force[6] = {0};
+            mj_contactForce(m, d, contact_index, contact_force);
+            force_n[wheel] += fabs((double)contact_force[0]);
+        }
+    }
+}
+
+static double measure_base_contact_normal_force(const mjModel *m,
+                                                const mjData *d,
+                                                const ModelMap *map)
+{
+    if (map->base_contact_geom < 0 || map->floor_geom < 0)
+    {
+        return 0.0;
+    }
+
+    double force_n = 0.0;
+    for (int contact_index = 0; contact_index < d->ncon; ++contact_index)
+    {
+        const mjContact *contact = &d->contact[contact_index];
+        if (!((contact->geom1 == map->base_contact_geom &&
+               contact->geom2 == map->floor_geom) ||
+              (contact->geom2 == map->base_contact_geom &&
+               contact->geom1 == map->floor_geom)))
+        {
+            continue;
+        }
+
+        mjtNum contact_force[6] = {0};
+        mj_contactForce(m, d, contact_index, contact_force);
+        force_n += fabs((double)contact_force[0]);
+    }
+    return force_n;
+}
+
+static double estimate_vmc_support_force(const vmc_leg_t *leg,
+                                         double base_accel_z_mps2)
+{
+    const double theta = leg->theta;
+    const double sin_theta = sin(theta);
+    const double cos_theta = cos(theta);
+
+    return leg->F0 * cos_theta +
+           leg->Tp * sin_theta / leg->L0 +
+           0.6 *
+               (base_accel_z_mps2 -
+                leg->dd_L0 * cos_theta +
+                2.0 * leg->d_L0 * leg->d_theta * sin_theta +
+                leg->L0 * leg->dd_theta * sin_theta +
+                leg->L0 * leg->d_theta * leg->d_theta * cos_theta);
+}
+
+static double update_support_force_observer(SupportForceObserver *observer,
+                                            double raw_force_n)
+{
+    observer->samples[0] = observer->samples[1];
+    observer->samples[1] = observer->samples[2];
+    observer->samples[2] = observer->samples[3];
+    observer->samples[3] = raw_force_n;
+
+    return 0.25 *
+           (observer->samples[0] +
+            observer->samples[1] +
+            observer->samples[2] +
+            observer->samples[3]);
 }
 
 static void update_airborne_metrics(const mjModel *m, const mjData *d, const ModelMap *map, double dt)
@@ -1331,16 +1485,65 @@ static void apply_wheel_balance_override(const SimControllerState *state, SimCon
     output->wheel_torque[1] = common + yaw_term;
 }
 
-static void apply_jump_pitch_wheel_hold(const SimControllerState *state, SimControllerOutput *output)
+static void apply_jump_pitch_wheel_hold(const SimControllerState *state,
+                                        int jump_phase,
+                                        const double wheel_contact_normal_n[2],
+                                        SimControllerOutput *output)
 {
-    const float pitch_term = g_jump_pitch_wheel_kp * (state->pitch - g_jump_pitch_target) +
-                             g_jump_pitch_wheel_kd * state->gyro[1];
-    const float wheel_torque = (float)clamp_double(pitch_term,
-                                                   -g_jump_pitch_wheel_limit,
-                                                   g_jump_pitch_wheel_limit);
+    float wheel_torque = 0.0f;
+    if (jump_phase >= 3)
+    {
+        const float pitch_term =
+            g_jump_pitch_wheel_kp * (state->pitch - g_jump_landing_pitch_target) +
+            g_jump_pitch_wheel_kd * state->gyro[1];
+        wheel_torque =
+            (float)clamp_double(pitch_term,
+                                -g_jump_pitch_wheel_limit,
+                                g_jump_pitch_wheel_limit);
+    }
+    float yaw_term = 0.0f;
+    const int stable_wheel_contact =
+        wheel_contact_normal_n != 0 &&
+        wheel_contact_normal_n[0] >= MUJOCO_JUMP_TOUCHDOWN_FORCE &&
+        wheel_contact_normal_n[1] >= MUJOCO_JUMP_TOUCHDOWN_FORCE;
+    const int takeoff_yaw_control =
+        jump_phase == 2 &&
+        wheel_contact_normal_n != 0 &&
+        (wheel_contact_normal_n[0] >= MUJOCO_JUMP_TOUCHDOWN_FORCE ||
+         wheel_contact_normal_n[1] >= MUJOCO_JUMP_TOUCHDOWN_FORCE);
+    const int landing_yaw_control =
+        jump_phase >= g_jump_landing_yaw_start_phase &&
+        jump_phase <= 5 &&
+        (jump_phase < 5 || stable_wheel_contact);
+    if ((takeoff_yaw_control || landing_yaw_control) &&
+        g_drive_command.yaw_lock)
+    {
+        const float yaw_error =
+            (float)wrap_pi((double)state->yaw - g_drive_command.yaw_hold);
+        const float yaw_kp =
+            takeoff_yaw_control ? g_jump_takeoff_yaw_kp
+                                : g_jump_landing_yaw_kp;
+        const float yaw_kd =
+            takeoff_yaw_control ? g_jump_takeoff_yaw_kd
+                                : g_jump_landing_yaw_kd;
+        const float yaw_limit =
+            takeoff_yaw_control ? g_jump_takeoff_yaw_limit
+                                : g_jump_landing_yaw_limit;
+        yaw_term =
+            (float)clamp_double(yaw_kp * yaw_error +
+                                    yaw_kd * state->gyro[2],
+                                -yaw_limit,
+                                yaw_limit);
+    }
 
-    output->wheel_torque[0] = wheel_torque;
-    output->wheel_torque[1] = wheel_torque;
+    output->wheel_torque[0] =
+        (float)clamp_double(wheel_torque - yaw_term,
+                            -g_jump_pitch_wheel_limit,
+                            g_jump_pitch_wheel_limit);
+    output->wheel_torque[1] =
+        (float)clamp_double(wheel_torque + yaw_term,
+                            -g_jump_pitch_wheel_limit,
+                            g_jump_pitch_wheel_limit);
 }
 
 
@@ -1455,8 +1658,27 @@ static void step_controller(const mjModel *m,
         }
         apply_auto_stop_schedule(d->time);
         apply_auto_jump_schedule(d->time);
-        const int airborne_before_step = wheels_are_airborne(m, d, map);
-        SimController_SetAirborne(airborne_before_step);
+        double observation_clearance[2];
+        double observation_contact_force[2];
+        measure_wheel_clearances(m, d, map, observation_clearance);
+        measure_wheel_contact_normal_force(m,
+                                           d,
+                                           map,
+                                           observation_contact_force);
+        const double observation_min_clearance =
+            fmin(observation_clearance[0], observation_clearance[1]);
+        const int airborne_before_step = observation_min_clearance > 0.005;
+        const float observation_clearance_f[2] = {
+            (float)observation_clearance[0],
+            (float)observation_clearance[1],
+        };
+        const float observation_contact_force_f[2] = {
+            (float)observation_contact_force[0],
+            (float)observation_contact_force[1],
+        };
+        SimController_SetFlightObservation(airborne_before_step,
+                                           observation_clearance_f,
+                                           observation_contact_force_f);
         SimController_SetState(&state);
         update_drive_command(&g_drive_command, &state, m->opt.timestep);
         SimController_SetDriveContext(g_drive_command.mode == DRIVE_FORWARD,
@@ -1470,7 +1692,10 @@ static void step_controller(const mjModel *m,
         SimController_Step((float)m->opt.timestep);
         SimController_GetOutput(&output);
         const int airborne = wheels_are_airborne(m, d, map);
-        const int jump_launch_active = chassis_move.jump_flag >= 2 || chassis_move.jump_flag2 >= 2;
+        const int jump_phase = chassis_move.jump_flag > chassis_move.jump_flag2
+                                   ? chassis_move.jump_flag
+                                   : chassis_move.jump_flag2;
+        const int jump_launch_active = jump_phase >= 2 && jump_phase <= 5;
         const int suppress_wheel_balance = jump_launch_active || airborne;
         if (g_drive_command.mode == DRIVE_JUMP && !SimController_IsJumping())
         {
@@ -1489,9 +1714,12 @@ static void step_controller(const mjModel *m,
             output.wheel_torque[0] = 0.0f;
             output.wheel_torque[1] = 0.0f;
         }
-        if (airborne || chassis_move.jump_flag == 3 || chassis_move.jump_flag2 == 3)
+        if (airborne || (jump_phase >= 2 && jump_phase <= 5))
         {
-            apply_jump_pitch_wheel_hold(&state, &output);
+            apply_jump_pitch_wheel_hold(&state,
+                                        jump_phase,
+                                        observation_contact_force,
+                                        &output);
         }
         if (zero_wheels)
         {
@@ -1511,17 +1739,58 @@ static void step_controller(const mjModel *m,
     if (g_jump_telemetry != 0)
     {
         const int base_qpos = m->jnt_qposadr[map->base_freejoint];
+        const int base_qvel = m->jnt_dofadr[map->base_freejoint];
+        float base_roll = 0.0f;
+        float base_pitch = 0.0f;
+        float base_yaw = 0.0f;
         double min_clearance = 0.0;
         double max_clearance = 0.0;
+        double wheel_clearance_lr[2];
+        const double base_accel_z_mps2 = d->qacc[base_qvel + 2];
+        double base_rpy_rad[3];
+        double vmc_support_force_raw[2];
+        double vmc_support_force_filtered[2];
+        int vmc_airborne[2];
+        double contact_normal_force[2];
         double command_torque[6];
         double applied_torque[6];
 
-        measure_wheel_clearance(m,
-                                d,
-                                map,
-                                &min_clearance,
-                                &max_clearance);
+        measure_wheel_clearances(m, d, map, wheel_clearance_lr);
+        min_clearance = fmin(wheel_clearance_lr[0], wheel_clearance_lr[1]);
+        max_clearance = fmax(wheel_clearance_lr[0], wheel_clearance_lr[1]);
         (void)max_clearance;
+        measure_wheel_contact_normal_force(m,
+                                           d,
+                                           map,
+                                           contact_normal_force);
+        if (map->rotate_control_frame)
+        {
+            mjtNum rotated_quat[4];
+            rotate_quat_into_controller_frame(&d->qpos[base_qpos + 3], rotated_quat);
+            quat_to_euler(rotated_quat, &base_roll, &base_pitch, &base_yaw);
+        }
+        else
+        {
+            quat_to_euler(&d->qpos[base_qpos + 3], &base_roll, &base_pitch, &base_yaw);
+        }
+        base_rpy_rad[0] = base_roll;
+        base_rpy_rad[1] = base_pitch;
+        base_rpy_rad[2] = base_yaw;
+        vmc_support_force_raw[0] =
+            estimate_vmc_support_force(&left, base_accel_z_mps2);
+        vmc_support_force_raw[1] =
+            estimate_vmc_support_force(&right, base_accel_z_mps2);
+        for (int leg = 0; leg < 2; ++leg)
+        {
+            vmc_support_force_filtered[leg] =
+                update_support_force_observer(&g_support_force_observer[leg],
+                                              vmc_support_force_raw[leg]);
+            vmc_airborne[leg] =
+                vmc_support_force_filtered[leg] < TAKE_OFF_FN_THRESHOLD;
+        }
+        const int contact_airborne =
+            contact_normal_force[0] <= 0.1 &&
+            contact_normal_force[1] <= 0.1;
         for (int actuator = 0; actuator < 6; ++actuator)
         {
             const int actuator_id = map->actuator[actuator];
@@ -1533,6 +1802,14 @@ static void step_controller(const mjModel *m,
             d->time,
             d->qpos[base_qpos + 2],
             min_clearance,
+            wheel_clearance_lr,
+            base_accel_z_mps2,
+            base_rpy_rad,
+            vmc_support_force_raw,
+            vmc_support_force_filtered,
+            vmc_airborne,
+            contact_normal_force,
+            contact_airborne,
             command_torque,
             applied_torque,
             g_drive_command.mode == DRIVE_JUMP || SimController_IsJumping(),
@@ -1542,6 +1819,16 @@ static void step_controller(const mjModel *m,
             wheels_are_airborne(m, d, map));
     }
     update_airborne_metrics(m, d, map, m->opt.timestep);
+    if (g_jump_attitude_active)
+    {
+        const double base_contact_force =
+            measure_base_contact_normal_force(m, d, map);
+        if (base_contact_force > g_jump_base_contact_peak_n)
+        {
+            g_jump_base_contact_peak_n = base_contact_force;
+            g_jump_base_contact_peak_time = d->time;
+        }
+    }
     if (g_jump_attitude_active && !SimController_IsJumping() && !wheels_are_airborne(m, d, map))
     {
         g_jump_attitude_active = 0;
@@ -1810,6 +2097,15 @@ int main(int argc, char **argv)
         {
             g_jump_pitch_offset = (float)atof(argv[++i]);
         }
+        else if (strcmp(argv[i], "--jump-landing-pitch-target") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_pitch_target = (float)atof(argv[++i]);
+            g_jump_landing_pitch_target_overridden = 1;
+        }
+        else if (strcmp(argv[i], "--jump-landing-pitch-offset") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_pitch_offset = (float)atof(argv[++i]);
+        }
         else if (strcmp(argv[i], "--jump-pitch-tp-kd") == 0 && i + 1 < argc)
         {
             g_jump_pitch_tp_kd = (float)atof(argv[++i]);
@@ -1865,6 +2161,114 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--jump-extend-end-margin") == 0 && i + 1 < argc)
         {
             g_jump_extend_end_margin = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-preland-l0") == 0 && i + 1 < argc)
+        {
+            g_jump_preland_l0 = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-preland-clearance") == 0 && i + 1 < argc)
+        {
+            g_jump_preland_clearance = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-preland-rate") == 0 && i + 1 < argc)
+        {
+            g_jump_preland_rate = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-buffer-l0") == 0 && i + 1 < argc)
+        {
+            g_jump_buffer_l0 = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-buffer-rate") == 0 && i + 1 < argc)
+        {
+            g_jump_buffer_rate = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-buffer-support-scale") == 0 && i + 1 < argc)
+        {
+            g_jump_buffer_support_scale = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-buffer-pid-scale") == 0 && i + 1 < argc)
+        {
+            g_jump_buffer_pid_scale = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-preland-pid-scale") == 0 && i + 1 < argc)
+        {
+            g_jump_preland_pid_scale = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-roll-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_roll_f0_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-roll-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_roll_f0_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-contact-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_contact_f0_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-balance-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_balance_f0_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-l0-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_roll_l0_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-l0-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_roll_l0_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-l0-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_balance_l0_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-clearance-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_clearance_l0_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-clearance-rate") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_clearance_l0_rate = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-clearance-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_clearance_l0_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-yaw-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_yaw_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-takeoff-yaw-kp") == 0 && i + 1 < argc)
+        {
+            g_jump_takeoff_yaw_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-takeoff-yaw-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_takeoff_yaw_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-takeoff-yaw-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_takeoff_yaw_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-yaw-kd") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_yaw_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-yaw-limit") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_yaw_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-landing-yaw-start-phase") == 0 && i + 1 < argc)
+        {
+            g_jump_landing_yaw_start_phase = atoi(argv[++i]);
+            if (g_jump_landing_yaw_start_phase < 3)
+            {
+                g_jump_landing_yaw_start_phase = 3;
+            }
+            if (g_jump_landing_yaw_start_phase > 5)
+            {
+                g_jump_landing_yaw_start_phase = 5;
+            }
         }
         else if (strcmp(argv[i], "--jump-tuck-kp") == 0 && i + 1 < argc)
         {
@@ -2014,8 +2418,8 @@ int main(int argc, char **argv)
                 }
             }
         }
-       
-        
+
+
         else if (strcmp(argv[i], "--init-key") == 0 && i + 1 < argc)
         {
             init_key_name = argv[++i];
@@ -2073,6 +2477,11 @@ int main(int argc, char **argv)
     {
         g_jump_pitch_target = initial_state.pitch + g_jump_pitch_offset;
     }
+    if (!g_jump_landing_pitch_target_overridden)
+    {
+        g_jump_landing_pitch_target =
+            initial_state.pitch + g_jump_landing_pitch_offset;
+    }
     for (int i = 0; i < 4; ++i)
     {
         g_airborne_pose_target[i] = initial_state.joint_pos[i];
@@ -2109,10 +2518,31 @@ int main(int argc, char **argv)
                                   g_jump_leg_swing_kd,
                                   g_jump_leg_swing_limit);
     SimController_SetJumpExtendEndMargin(g_jump_extend_end_margin);
+    SimController_SetJumpLandingLegLengths(g_jump_preland_l0,
+                                           g_jump_buffer_l0);
+    SimController_SetJumpPrelandClearance(g_jump_preland_clearance);
+    SimController_SetJumpPrelandPidScale(g_jump_preland_pid_scale);
+    SimController_SetJumpLandingDynamics(g_jump_preland_rate,
+                                         g_jump_buffer_rate,
+                                         g_jump_buffer_support_scale,
+                                         g_jump_buffer_pid_scale);
+    SimController_SetJumpLandingBalance(g_jump_landing_roll_f0_kp,
+                                        g_jump_landing_roll_f0_kd,
+                                        g_jump_landing_contact_f0_kp,
+                                        g_jump_landing_balance_f0_limit);
+    SimController_SetJumpLandingL0Balance(g_jump_landing_roll_l0_kp,
+                                          g_jump_landing_roll_l0_kd,
+                                          g_jump_landing_balance_l0_limit);
+    SimController_SetJumpLandingClearanceBalance(
+        g_jump_landing_clearance_l0_kp,
+        g_jump_landing_clearance_l0_rate,
+        g_jump_landing_clearance_l0_limit);
     SimController_SetMode(start_mode);
     if (jump_telemetry_prefix != 0)
     {
-        g_jump_telemetry = JumpTelemetry_Create(jump_telemetry_prefix);
+        g_jump_telemetry =
+            JumpTelemetry_Create(jump_telemetry_prefix,
+                                 TAKE_OFF_FN_THRESHOLD);
         if (g_jump_telemetry == 0)
         {
             fprintf(stderr,
@@ -2156,6 +2586,12 @@ int main(int argc, char **argv)
            g_jump_pitch_wheel_kp,
            g_jump_pitch_wheel_kd,
            g_jump_pitch_wheel_limit);
+    printf("Jump landing pitch target: %.3f\n",
+           g_jump_landing_pitch_target);
+    printf("Jump takeoff yaw damping: kp=%.3f kd=%.3f limit=%.3f\n",
+           g_jump_takeoff_yaw_kp,
+           g_jump_takeoff_yaw_kd,
+           g_jump_takeoff_yaw_limit);
     printf("Jump pitch leg Tp hold: target=%.3f kp=%.3f kd=%.3f limit=%.3f\n",
            g_jump_pitch_target,
            g_jump_pitch_tp_kp,
@@ -2175,6 +2611,33 @@ int main(int argc, char **argv)
            g_jump_leg_swing_kd,
            g_jump_leg_swing_limit);
     printf("Jump extend end margin: %.3f\n", g_jump_extend_end_margin);
+    printf("Jump landing leg lengths: clearance=%.3f preland_l0=%.3f preland_rate=%.3f preland_pid_scale=%.3f buffer_l0=%.3f buffer_rate=%.3f buffer_support=%.3f buffer_pid=%.3f\n",
+           g_jump_preland_clearance,
+           g_jump_preland_l0,
+           g_jump_preland_rate,
+           g_jump_preland_pid_scale,
+           g_jump_buffer_l0,
+           g_jump_buffer_rate,
+           g_jump_buffer_support_scale,
+           g_jump_buffer_pid_scale);
+    printf("Jump landing balance: roll_kp=%.3f roll_kd=%.3f contact_kp=%.5f limit=%.3f\n",
+           g_jump_landing_roll_f0_kp,
+           g_jump_landing_roll_f0_kd,
+           g_jump_landing_contact_f0_kp,
+           g_jump_landing_balance_f0_limit);
+    printf("Jump landing L0 balance: roll_kp=%.3f roll_kd=%.3f limit=%.3f\n",
+           g_jump_landing_roll_l0_kp,
+           g_jump_landing_roll_l0_kd,
+           g_jump_landing_balance_l0_limit);
+    printf("Jump phase-4 clearance L0 balance: kp=%.3f rate=%.3f limit=%.3f\n",
+           g_jump_landing_clearance_l0_kp,
+           g_jump_landing_clearance_l0_rate,
+           g_jump_landing_clearance_l0_limit);
+    printf("Jump yaw wheel balance: start_phase=%d kp=%.3f kd=%.3f limit=%.3f\n",
+           g_jump_landing_yaw_start_phase,
+           g_jump_landing_yaw_kp,
+           g_jump_landing_yaw_kd,
+           g_jump_landing_yaw_limit);
     printf("Jump XML-pose tuck: kp=%.3f kd=%.3f limit=%.3f target=[%.3f %.3f %.3f %.3f]\n",
            g_jump_tuck_kp,
            g_jump_tuck_kd,
@@ -2248,6 +2711,9 @@ int main(int argc, char **argv)
                g_jump_pitch_min_time,
                g_jump_pitch_max,
                g_jump_pitch_max_time);
+        printf("Jump base-floor contact peak: %.3f N @ %.3f s\n",
+               g_jump_base_contact_peak_n,
+               g_jump_base_contact_peak_time);
     }
     if (g_jump_telemetry != 0)
     {

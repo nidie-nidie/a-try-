@@ -52,6 +52,11 @@ float mujoco_jump_leg_swing_kp = MUJOCO_JUMP_LEG_SWING_KP;
 float mujoco_jump_leg_swing_kd = MUJOCO_JUMP_LEG_SWING_KD;
 float mujoco_jump_leg_swing_limit = MUJOCO_JUMP_LEG_SWING_LIMIT;
 float mujoco_jump_extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN;
+float mujoco_jump_landing_l0_set = INIT_LEG_LENGTH;
+float mujoco_jump_landing_support_scale = 1.0f;
+float mujoco_jump_landing_pid_scale = 1.0f;
+float mujoco_jump_landing_balance_f0 = 0.0f;
+float mujoco_jump_landing_balance_l0 = 0.0f;
 
 void mySaturate(float *in, float min, float max)
 {

@@ -122,6 +122,11 @@ extern float mujoco_jump_leg_swing_kp;
 extern float mujoco_jump_leg_swing_kd;
 extern float mujoco_jump_leg_swing_limit;
 extern float mujoco_jump_extend_end_margin;
+extern float mujoco_jump_landing_l0_set;
+extern float mujoco_jump_landing_support_scale;
+extern float mujoco_jump_landing_pid_scale;
+extern float mujoco_jump_landing_balance_f0;
+extern float mujoco_jump_landing_balance_l0;
 
 extern void mySaturate(float *in, float min, float max);
 

@@ -197,7 +197,7 @@ void ChassisR_control_loop(void)
     right.wheel_T = T_Tp_r[0] - chassis_move.turn_T; // 轮毂电机输出力矩，减去yaw轴补偿
     right.Tp = T_Tp_r[1] + chassis_move.leg_tp;      // 右边髋关节输出力矩 + 防劈叉补偿
 
-    if (chassis_move.jump_flag == 1 || chassis_move.jump_flag == 2 || chassis_move.jump_flag == 3)
+    if (chassis_move.jump_flag >= 1 && chassis_move.jump_flag <= 6)
     {
         if (chassis_move.jump_flag == 1)
         { // 平滑压缩和保持由 sim_adapter 统一协调，左右腿共用同一个目标
@@ -222,25 +222,24 @@ void ChassisR_control_loop(void)
             }
         }
         else if (chassis_move.jump_flag == 3)
-        {                                                                   // 缩腿阶段
+        {                                                                   // 腾空缩腿阶段，结束条件由 sim_adapter 统一管理
             right.F0 = PID_Calculate(&legr_pid, INIT_LEG_LENGTH, right.L0); // pd
-            // chassis_move.theta_set = 0.0f;
-
             chassis_move.x_filter = 0.0f;
             chassis_move.x_set = chassis_move.x_filter;
-            if (right.L0 < INIT_LEG_LENGTH + 0.05f)
-            {
-                jump_time_r++;
-            }
-            if (jump_time_r >= 3 && jump_time_l >= 3)
-            {
-                jump_time_r = 0;
-                jump_time_l = 0;
-                chassis_move.leg_set = INIT_LEG_LENGTH;
-                chassis_move.last_leg_set = INIT_LEG_LENGTH;
-                chassis_move.jump_flag = 0; // 缩腿完毕
-                chassis_move.jump_flag2 = 0;
-            }
+        }
+        else if (chassis_move.jump_flag == 4 ||
+                 chassis_move.jump_flag == 5 ||
+                 chassis_move.jump_flag == 6)
+        { // 落地预备/触地缓冲/恢复站立，腿长目标由 sim_adapter 平滑给出
+            float landing_l0_set = mujoco_jump_landing_l0_set - mujoco_jump_landing_balance_l0;
+            mySaturate(&landing_l0_set, MIN_LEG_LENGTH, MAX_LEG_LENGTH);
+            right.F0 =
+                mujoco_jump_landing_support_scale * BODY_GRAVITY / arm_cos_f32(right.theta) +
+                mujoco_jump_landing_pid_scale *
+                    PID_Calculate(&legr_pid, landing_l0_set, right.L0) -
+                mujoco_jump_landing_balance_f0;
+            chassis_move.x_filter = 0.0f;
+            chassis_move.x_set = chassis_move.x_filter;
         }
     }
     else
