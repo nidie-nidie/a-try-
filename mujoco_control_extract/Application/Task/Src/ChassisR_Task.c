@@ -159,7 +159,7 @@ void ChassisR_feedback_update(void)
     // 计算倒地自起的腿长补偿，防止劈叉
     chassis_move.total_yaw = INS.YawTotalAngle;
     chassis_move.roll = INS.Roll;
-    chassis_move.theta_err = 2.0f * INIT_THETA - (right.theta + left.theta);
+    chassis_move.theta_err = 0.0f - (right.theta + left.theta);
 
     if (INS.Pitch < M_PI_6 && INS.Pitch > -M_PI_6)
     { // 根据pitch角度判断倒地自起是否完成
@@ -185,7 +185,7 @@ void ChassisR_control_loop(void)
 
     chassis_move.leg_tp = PID_Calculate(&tp_pid, 0.0f, chassis_move.theta_err); // 防劈叉pid计算
 
-    x_r[0] = X0_OFFSET + (right.theta - INIT_THETA);                   // theta误差，目标theta与rm_test_dev一致为0
+    x_r[0] = X0_OFFSET + (right.theta - 0.0f);                         // theta误差，目标theta是0
     x_r[1] = X1_OFFSET + (right.d_theta - 0.0f);                       // theta_dot误差，目标theta_dot是0
     x_r[2] = X2_OFFSET + (chassis_move.x_filter - chassis_move.x_set); // x误差，目标x是滤波后的x_set
     x_r[3] = X3_OFFSET + (chassis_move.v_filter - chassis_move.v_set); // x_dot误差，目标x_dot是滤波后的v_set
@@ -197,19 +197,29 @@ void ChassisR_control_loop(void)
     right.wheel_T = T_Tp_r[0] - chassis_move.turn_T; // 轮毂电机输出力矩，减去yaw轴补偿
     right.Tp = T_Tp_r[1] + chassis_move.leg_tp;      // 右边髋关节输出力矩 + 防劈叉补偿
 
-    if (chassis_move.jump_flag >= 1 && chassis_move.jump_flag <= 6)
+    if (chassis_move.jump_flag == 1 || chassis_move.jump_flag == 2 || chassis_move.jump_flag == 3)
     {
         if (chassis_move.jump_flag == 1)
-        { // 平滑压缩和保持由 sim_adapter 统一协调，左右腿共用同一个目标
-            right.F0 = mujoco_jump_compress_support_scale * BODY_GRAVITY / arm_cos_f32(right.theta) +
-                       PID_Calculate(&legr_pid, mujoco_jump_compress_l0_set, right.L0);
+        {                                                                                                            // 压缩阶段
+            right.F0 = BODY_GRAVITY / arm_cos_f32(right.theta) + PID_Calculate(&legr_pid, MIN_LEG_LENGTH, right.L0); // 前馈+pd
+
+            if (right.L0 < MIN_LEG_LENGTH + 0.02f)
+            {
+                jump_time_r++;
+            }
+            if (jump_time_r >= 10 && jump_time_l >= 10)
+            {
+                jump_time_r = 0;
+                jump_time_l = 0;
+                chassis_move.jump_flag = 2; // 压缩完毕进入上升加速阶段
+                chassis_move.jump_flag2 = 2;
+            }
         }
         else if (chassis_move.jump_flag == 2)
         {                                                                                                            // 上升加速阶段
             right.F0 = BODY_GRAVITY / arm_cos_f32(right.theta) + PID_Calculate(&legr_pid, MAX_LEG_LENGTH, right.L0); // 前馈+pd
-            right.F0 += mujoco_jump_thrust_ff;
 
-            if (right.L0 > MAX_LEG_LENGTH - mujoco_jump_extend_end_margin)
+            if (right.L0 > MAX_LEG_LENGTH - 0.03f)
             {
                 jump_time_r++;
             }
@@ -222,24 +232,25 @@ void ChassisR_control_loop(void)
             }
         }
         else if (chassis_move.jump_flag == 3)
-        {                                                                   // 腾空缩腿阶段，结束条件由 sim_adapter 统一管理
+        {                                                                   // 缩腿阶段
             right.F0 = PID_Calculate(&legr_pid, INIT_LEG_LENGTH, right.L0); // pd
+            // chassis_move.theta_set = 0.0f;
+
             chassis_move.x_filter = 0.0f;
             chassis_move.x_set = chassis_move.x_filter;
-        }
-        else if (chassis_move.jump_flag == 4 ||
-                 chassis_move.jump_flag == 5 ||
-                 chassis_move.jump_flag == 6)
-        { // 落地预备/触地缓冲/恢复站立，腿长目标由 sim_adapter 平滑给出
-            float landing_l0_set = mujoco_jump_landing_l0_set - mujoco_jump_landing_balance_l0;
-            mySaturate(&landing_l0_set, MIN_LEG_LENGTH, MAX_LEG_LENGTH);
-            right.F0 =
-                mujoco_jump_landing_support_scale * BODY_GRAVITY / arm_cos_f32(right.theta) +
-                mujoco_jump_landing_pid_scale *
-                    PID_Calculate(&legr_pid, landing_l0_set, right.L0) -
-                mujoco_jump_landing_balance_f0;
-            chassis_move.x_filter = 0.0f;
-            chassis_move.x_set = chassis_move.x_filter;
+            if (right.L0 < INIT_LEG_LENGTH + 0.05f)
+            {
+                jump_time_r++;
+            }
+            if (jump_time_r >= 3 && jump_time_l >= 3)
+            {
+                jump_time_r = 0;
+                jump_time_l = 0;
+                chassis_move.leg_set = INIT_LEG_LENGTH;
+                chassis_move.last_leg_set = INIT_LEG_LENGTH;
+                chassis_move.jump_flag = 0; // 缩腿完毕
+                chassis_move.jump_flag2 = 0;
+            }
         }
     }
     else
@@ -255,7 +266,7 @@ void ChassisR_control_loop(void)
         { // 当两腿同时离地并且遥控器没有在控制腿的伸缩时，才认为离地
           // 排除跳跃的压缩阶段和跳跃的缩腿阶段
             right.wheel_T = 0.0f;
-            right.Tp = LQR_K_R[6] * (right.theta - INIT_THETA) + LQR_K_R[7] * (right.d_theta - 0.0f);
+            right.Tp = LQR_K_R[6] * (right.theta - 0.0f) + LQR_K_R[7] * (right.d_theta - 0.0f);
 
             chassis_move.x_filter = 0.0f;
             chassis_move.x_set = chassis_move.x_filter;
@@ -277,24 +288,6 @@ void ChassisR_control_loop(void)
     {
         right.Tp = 0.0f;
         right.F0 = 0.0f;
-    }
-
-    if (chassis_move.jump_flag != 0 || chassis_move.jump_flag2 != 0)
-    {
-        float jump_pitch_tp = mujoco_jump_pitch_tp_kp * (INS.Pitch - mujoco_jump_pitch_target) +
-                              mujoco_jump_pitch_tp_kd * INS.Gyro[1];
-        mySaturate(&jump_pitch_tp, -mujoco_jump_pitch_tp_limit, mujoco_jump_pitch_tp_limit);
-        right.Tp += jump_pitch_tp;
-    }
-    if (chassis_move.jump_flag == 2)
-    {
-        float jump_leg_swing_tp =
-            mujoco_jump_leg_swing_kp * (INIT_L0_PITCH + mujoco_jump_leg_swing_offset - right.phi0) -
-            mujoco_jump_leg_swing_kd * right.d_phi0;
-        mySaturate(&jump_leg_swing_tp,
-                   -mujoco_jump_leg_swing_limit,
-                   mujoco_jump_leg_swing_limit);
-        right.Tp += jump_leg_swing_tp;
     }
 
     VMC_calc_2(&right); // 计算期望的关节输出力矩

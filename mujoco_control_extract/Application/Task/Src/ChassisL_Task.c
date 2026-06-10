@@ -139,7 +139,7 @@ void ChassisL_control_loop(void)
 
     LQR_K_calc(left.L0, LQR_K_L); // 根据当前腿长计算lqr控制器的增益
 
-    x_l[0] = X0_OFFSET + (left.theta - INIT_THETA);                     // theta误差，目标theta与rm_test_dev一致为0
+    x_l[0] = X0_OFFSET + (left.theta - 0.0f);                           // theta误差，目标theta是0
     x_l[1] = X1_OFFSET + (left.d_theta - 0.0f);                         // theta_dot误差，目标theta_dot是0
     x_l[2] = -X2_OFFSET + (chassis_move.x_set - chassis_move.x_filter); // x误差，目标x是滤波后的x_set
     x_l[3] = -X3_OFFSET + (chassis_move.v_set - chassis_move.v_filter); // x_dot误差，目标x_dot是滤波后的v_set
@@ -151,19 +151,29 @@ void ChassisL_control_loop(void)
     left.wheel_T = T_Tp_l[0] - chassis_move.turn_T; // 轮毂电机输出力矩，减去yaw轴补偿
     left.Tp = T_Tp_l[1] + chassis_move.leg_tp;      // 左边髋关节输出力矩 + 防劈叉补偿
 
-    if (chassis_move.jump_flag2 >= 1 && chassis_move.jump_flag2 <= 6)
+    if (chassis_move.jump_flag2 == 1 || chassis_move.jump_flag2 == 2 || chassis_move.jump_flag2 == 3)
     {
         if (chassis_move.jump_flag2 == 1)
-        { // 平滑压缩和保持由 sim_adapter 统一协调，左右腿共用同一个目标
-            left.F0 = mujoco_jump_compress_support_scale * BODY_GRAVITY / arm_cos_f32(left.theta) +
-                      PID_Calculate(&legl_pid, mujoco_jump_compress_l0_set, left.L0);
+        {                                                                                                         // 压缩阶段
+            left.F0 = BODY_GRAVITY / arm_cos_f32(left.theta) + PID_Calculate(&legl_pid, MIN_LEG_LENGTH, left.L0); // 前馈+pd
+
+            if (left.L0 < MIN_LEG_LENGTH + 0.02f)
+            {
+                jump_time_l++;
+            }
+            if (jump_time_l >= 10 && jump_time_r >= 10)
+            {
+                jump_time_l = 0;
+                jump_time_r = 0;
+                chassis_move.jump_flag2 = 2;
+                chassis_move.jump_flag = 2; // 压缩完毕进入上升加速阶段
+            }
         }
         else if (chassis_move.jump_flag2 == 2)
         {                                                                                                         // 上升加速阶段
             left.F0 = BODY_GRAVITY / arm_cos_f32(left.theta) + PID_Calculate(&legl_pid, MAX_LEG_LENGTH, left.L0); // 前馈+pd
-            left.F0 += mujoco_jump_thrust_ff;
 
-            if (left.L0 > MAX_LEG_LENGTH - mujoco_jump_extend_end_margin)
+            if (left.L0 > MAX_LEG_LENGTH - 0.03f)
             {
                 jump_time_l++;
             }
@@ -176,24 +186,25 @@ void ChassisL_control_loop(void)
             }
         }
         else if (chassis_move.jump_flag2 == 3)
-        {                                                                 // 腾空缩腿阶段，结束条件由 sim_adapter 统一管理
+        {                                                                 // 缩腿阶段
             left.F0 = PID_Calculate(&legl_pid, INIT_LEG_LENGTH, left.L0); // pd
+            // chassis_move.theta_set = 0.0f;
+
             chassis_move.x_filter = 0.0f;
             chassis_move.x_set = chassis_move.x_filter;
-        }
-        else if (chassis_move.jump_flag2 == 4 ||
-                 chassis_move.jump_flag2 == 5 ||
-                 chassis_move.jump_flag2 == 6)
-        { // 落地预备/触地缓冲/恢复站立，腿长目标由 sim_adapter 平滑给出
-            float landing_l0_set = mujoco_jump_landing_l0_set + mujoco_jump_landing_balance_l0;
-            mySaturate(&landing_l0_set, MIN_LEG_LENGTH, MAX_LEG_LENGTH);
-            left.F0 =
-                mujoco_jump_landing_support_scale * BODY_GRAVITY / arm_cos_f32(left.theta) +
-                mujoco_jump_landing_pid_scale *
-                    PID_Calculate(&legl_pid, landing_l0_set, left.L0) +
-                mujoco_jump_landing_balance_f0;
-            chassis_move.x_filter = 0.0f;
-            chassis_move.x_set = chassis_move.x_filter;
+            if (left.L0 < INIT_LEG_LENGTH + 0.05f)
+            {
+                jump_time_l++;
+            }
+            if (jump_time_l >= 3 && jump_time_r >= 3)
+            {
+                jump_time_l = 0;
+                jump_time_r = 0;
+                chassis_move.leg_set = INIT_LEG_LENGTH;
+                chassis_move.last_leg_set = INIT_LEG_LENGTH;
+                chassis_move.jump_flag2 = 0;
+                chassis_move.jump_flag = 0;
+            }
         }
     }
     else
@@ -209,7 +220,7 @@ void ChassisL_control_loop(void)
         { // 当两腿同时离地并且遥控器没有在控制腿的伸缩时，才认为离地
           // 排除跳跃的压缩阶段和跳跃的缩腿阶段
             left.wheel_T = 0.0f;
-            left.Tp = LQR_K_L[6] * (left.theta - INIT_THETA) + LQR_K_L[7] * (left.d_theta - 0.0f);
+            left.Tp = LQR_K_L[6] * (left.theta - 0.0f) + LQR_K_L[7] * (left.d_theta - 0.0f);
 
             chassis_move.x_filter = 0.0f;
             chassis_move.x_set = chassis_move.x_filter;
@@ -231,24 +242,6 @@ void ChassisL_control_loop(void)
     {
         left.Tp = 0.0f;
         left.F0 = 0.0f;
-    }
-
-    if (chassis_move.jump_flag2 != 0 || chassis_move.jump_flag != 0)
-    {
-        float jump_pitch_tp = mujoco_jump_pitch_tp_kp * (INS.Pitch - mujoco_jump_pitch_target) +
-                              mujoco_jump_pitch_tp_kd * INS.Gyro[1];
-        mySaturate(&jump_pitch_tp, -mujoco_jump_pitch_tp_limit, mujoco_jump_pitch_tp_limit);
-        left.Tp -= jump_pitch_tp;
-    }
-    if (chassis_move.jump_flag2 == 2)
-    {
-        float jump_leg_swing_tp =
-            mujoco_jump_leg_swing_kp * (INIT_L0_PITCH + mujoco_jump_leg_swing_offset - left.phi0) -
-            mujoco_jump_leg_swing_kd * left.d_phi0;
-        mySaturate(&jump_leg_swing_tp,
-                   -mujoco_jump_leg_swing_limit,
-                   mujoco_jump_leg_swing_limit);
-        left.Tp += jump_leg_swing_tp;
     }
 
     VMC_calc_2(&left); // 计算期望的关节输出力矩

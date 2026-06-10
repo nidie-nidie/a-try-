@@ -1,6 +1,8 @@
 #ifndef JUMP_TELEMETRY_H
 #define JUMP_TELEMETRY_H
 
+#include "sim_adapter.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,6 +13,10 @@ JumpTelemetry *JumpTelemetry_Create(const char *output_prefix,
                                     double support_takeoff_threshold_n);
 void JumpTelemetry_Record(JumpTelemetry *telemetry,
                           double time_s,
+                          double body_x_m,
+                          double body_y_m,
+                          double body_forward_v_mps,
+                          double body_lateral_v_mps,
                           double base_z_m,
                           double wheel_clearance_m,
                           const double wheel_clearance_lr_m[2],
@@ -21,8 +27,10 @@ void JumpTelemetry_Record(JumpTelemetry *telemetry,
                           const int vmc_airborne[2],
                           const double contact_normal_force_n[2],
                           int contact_airborne,
+                          const double requested_torque_nm[6],
                           const double command_torque_nm[6],
                           const double applied_torque_nm[6],
+                          const SimControllerControlBreakdown *control_breakdown,
                           int jump_active,
                           int jump_phase,
                           int airborne);

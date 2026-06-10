@@ -8,56 +8,119 @@
 #include "Chassis_Task.h"
 #include "INS_Task.h"
 #include "Motor.h"
+#include "jump_state_machine.h"
 #include "robot_param.h"
 
 extern INS_t INS;
 
-static float sim_dt_s = 0.003f;
-static float sim_stand_l0_pitch = INIT_L0_PITCH;
+static float sim_stand_l0_pitch = M_PI_2;
 static int sim_drive_forward = 0;
 static float sim_position_hold_blend = 1.0f;
 static int sim_yaw_lock = 1;
-static int sim_airborne = 0;
 static int sim_airborne_pose_valid = 0;
-static int sim_jump_compression_enabled = 1;
-static int sim_jump_flight_active = 0;
-static int sim_jump_has_been_airborne = 0;
-static float sim_jump_compress_elapsed = 0.0f;
-static float sim_jump_compress_hold_elapsed = 0.0f;
-static float sim_jump_landing_elapsed = 0.0f;
-static float sim_jump_touch_elapsed = 0.0f;
-static float sim_jump_recover_elapsed = 0.0f;
 static float sim_body_z_vel = 0.0f;
-static float sim_wheel_clearance_m[2];
-static float sim_wheel_contact_normal_n[2];
-static float sim_jump_preland_clearance = MUJOCO_JUMP_PRELAND_CLEARANCE;
-static float sim_jump_preland_l0 = MUJOCO_JUMP_PRELAND_L0;
-static float sim_jump_preland_rate = MUJOCO_JUMP_PRELAND_RATE;
-static float sim_jump_preland_pid_scale = MUJOCO_JUMP_PRELAND_PID_SCALE;
-static float sim_jump_touchdown_force = MUJOCO_JUMP_TOUCHDOWN_FORCE;
-static float sim_jump_touchdown_hold = MUJOCO_JUMP_TOUCHDOWN_HOLD;
-static float sim_jump_buffer_l0 = MUJOCO_JUMP_BUFFER_L0;
-static float sim_jump_buffer_rate = MUJOCO_JUMP_BUFFER_RATE;
-static float sim_jump_buffer_support_scale = MUJOCO_JUMP_BUFFER_SUPPORT_SCALE;
-static float sim_jump_buffer_pid_scale = MUJOCO_JUMP_BUFFER_PID_SCALE;
-static float sim_jump_buffer_hold_time = MUJOCO_JUMP_BUFFER_HOLD_TIME;
-static float sim_jump_recover_rate = MUJOCO_JUMP_RECOVER_RATE;
-static float sim_jump_recover_time = MUJOCO_JUMP_RECOVER_TIME;
-static float sim_jump_recover_pitch_rate = MUJOCO_JUMP_RECOVER_PITCH_RATE;
-static float sim_jump_landing_roll_f0_kp = MUJOCO_JUMP_LANDING_ROLL_F0_KP;
-static float sim_jump_landing_roll_f0_kd = MUJOCO_JUMP_LANDING_ROLL_F0_KD;
-static float sim_jump_landing_contact_f0_kp = MUJOCO_JUMP_LANDING_CONTACT_F0_KP;
-static float sim_jump_landing_balance_f0_limit = MUJOCO_JUMP_LANDING_BALANCE_F0_LIMIT;
-static float sim_jump_landing_roll_l0_kp = MUJOCO_JUMP_LANDING_ROLL_L0_KP;
-static float sim_jump_landing_roll_l0_kd = MUJOCO_JUMP_LANDING_ROLL_L0_KD;
-static float sim_jump_landing_balance_l0_limit = MUJOCO_JUMP_LANDING_BALANCE_L0_LIMIT;
-static float sim_jump_landing_clearance_l0_kp = MUJOCO_JUMP_LANDING_CLEARANCE_L0_KP;
-static float sim_jump_landing_clearance_l0_rate = MUJOCO_JUMP_LANDING_CLEARANCE_L0_RATE;
-static float sim_jump_landing_clearance_l0_limit = MUJOCO_JUMP_LANDING_CLEARANCE_L0_LIMIT;
+static float sim_body_forward_v = 0.0f;
+static float sim_body_lateral_v = 0.0f;
+static JumpStateMachine sim_jump_machine;
+static JumpObservation sim_jump_observation;
+static JumpStateMachineConfig sim_jump_config = {
+    .compression_enabled = 1,
+    .initial_leg_length = INIT_LEG_LENGTH,
+    .min_leg_length = MIN_LEG_LENGTH,
+    .max_leg_length = MAX_LEG_LENGTH,
+    .compress_target = MUJOCO_JUMP_COMPRESS_TARGET,
+    .compress_rate = MUJOCO_JUMP_COMPRESS_RATE,
+    .compress_support_scale = MUJOCO_JUMP_COMPRESS_SUPPORT_SCALE,
+    .compress_tolerance = MUJOCO_JUMP_COMPRESS_TOLERANCE,
+    .compress_hold_time = MUJOCO_JUMP_COMPRESS_HOLD_TIME,
+    .compress_timeout = MUJOCO_JUMP_COMPRESS_TIMEOUT,
+    .extend_l0 = MUJOCO_JUMP_EXTEND_L0,
+    .extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN,
+    .extend_rate = MUJOCO_JUMP_EXTEND_RATE,
+    .thrust_min_time = MUJOCO_JUMP_THRUST_MIN_TIME,
+    .thrust_timeout = MUJOCO_JUMP_THRUST_TIMEOUT,
+    .extend_hold_steps = 2,
+    .tuck_min_time = MUJOCO_JUMP_TUCK_MIN_TIME,
+    .tuck_timeout = MUJOCO_JUMP_TUCK_TIMEOUT,
+    .preland_clearance = MUJOCO_JUMP_PRELAND_CLEARANCE,
+    .preland_l0 = MUJOCO_JUMP_PRELAND_L0,
+    .preland_rate = MUJOCO_JUMP_PRELAND_RATE,
+    .preland_pid_scale = MUJOCO_JUMP_PRELAND_PID_SCALE,
+    .preland_timeout = MUJOCO_JUMP_PRELAND_TIMEOUT,
+    .touchdown_force = MUJOCO_JUMP_TOUCHDOWN_FORCE,
+    .touchdown_hold = MUJOCO_JUMP_TOUCHDOWN_HOLD,
+    .buffer_l0 = MUJOCO_JUMP_BUFFER_L0,
+    .buffer_rate = MUJOCO_JUMP_BUFFER_RATE,
+    .buffer_support_scale = MUJOCO_JUMP_BUFFER_SUPPORT_SCALE,
+    .buffer_pid_scale = MUJOCO_JUMP_BUFFER_PID_SCALE,
+    .buffer_hold_time = MUJOCO_JUMP_BUFFER_HOLD_TIME,
+    .buffer_timeout = MUJOCO_JUMP_BUFFER_TIMEOUT,
+    .recover_rate = MUJOCO_JUMP_RECOVER_RATE,
+    .recover_time = MUJOCO_JUMP_RECOVER_TIME,
+    .recover_stable_time = MUJOCO_JUMP_RECOVER_STABLE_TIME,
+    .recover_timeout = MUJOCO_JUMP_RECOVER_TIMEOUT,
+    .recover_l0_tolerance = MUJOCO_JUMP_RECOVER_L0_TOLERANCE,
+    .recover_roll_limit = MUJOCO_JUMP_RECOVER_ROLL_LIMIT,
+    .recover_pitch_limit = MUJOCO_JUMP_RECOVER_PITCH_LIMIT,
+    .recover_pitch_rate = MUJOCO_JUMP_RECOVER_PITCH_RATE,
+    .recover_speed_limit = MUJOCO_JUMP_RECOVER_SPEED_LIMIT,
+    .wheel_recover_blend_time = MUJOCO_JUMP_WHEEL_RECOVER_BLEND_TIME,
+    .request_roll_limit = MUJOCO_JUMP_REQUEST_ROLL_LIMIT,
+    .request_pitch_limit = MUJOCO_JUMP_REQUEST_PITCH_LIMIT,
+    .request_speed_limit = MUJOCO_JUMP_REQUEST_SPEED_LIMIT,
+    .request_z_speed_limit = MUJOCO_JUMP_REQUEST_Z_SPEED_LIMIT,
+    .landing_roll_f0_kp = MUJOCO_JUMP_LANDING_ROLL_F0_KP,
+    .landing_roll_f0_kd = MUJOCO_JUMP_LANDING_ROLL_F0_KD,
+    .landing_contact_f0_kp = MUJOCO_JUMP_LANDING_CONTACT_F0_KP,
+    .landing_balance_f0_limit = MUJOCO_JUMP_LANDING_BALANCE_F0_LIMIT,
+    .landing_roll_l0_kp = MUJOCO_JUMP_LANDING_ROLL_L0_KP,
+    .landing_roll_l0_kd = MUJOCO_JUMP_LANDING_ROLL_L0_KD,
+    .landing_balance_l0_limit = MUJOCO_JUMP_LANDING_BALANCE_L0_LIMIT,
+    .landing_clearance_l0_kp = MUJOCO_JUMP_LANDING_CLEARANCE_L0_KP,
+    .landing_clearance_l0_rate = MUJOCO_JUMP_LANDING_CLEARANCE_L0_RATE,
+    .landing_clearance_l0_limit = MUJOCO_JUMP_LANDING_CLEARANCE_L0_LIMIT,
+    .lqr_tp_weight = MUJOCO_JUMP_LQR_TP_WEIGHT,
+    .split_tp_weight = MUJOCO_JUMP_SPLIT_TP_WEIGHT,
+    .pitch_tp_weight = MUJOCO_JUMP_PITCH_TP_WEIGHT,
+    .leg_swing_tp_weight = MUJOCO_JUMP_LEG_SWING_TP_WEIGHT,
+};
 static float sim_airborne_joint_target[4];
 static float sim_airborne_pose_kp = MUJOCO_JUMP_TUCK_KP;
 static float sim_airborne_pose_kd = MUJOCO_JUMP_TUCK_KD;
 static float sim_airborne_pose_torque_limit = MUJOCO_JUMP_TUCK_TORQUE_LIMIT;
+
+/*
+ * Legacy MuJoCo tuning values are retained by the adapter API only.
+ * The real controller does not consume these variables.
+ */
+static float mujoco_jump_thrust_ff = MUJOCO_JUMP_THRUST_FF;
+static float mujoco_jump_pitch_target = MUJOCO_JUMP_PITCH_TARGET;
+static float mujoco_jump_pitch_tp_kp = MUJOCO_JUMP_PITCH_TP_KP;
+static float mujoco_jump_pitch_tp_kd = MUJOCO_JUMP_PITCH_TP_KD;
+static float mujoco_jump_pitch_tp_limit = MUJOCO_JUMP_PITCH_TP_LIMIT;
+static float mujoco_jump_compress_l0_set = INIT_LEG_LENGTH;
+static float mujoco_jump_compress_target = MUJOCO_JUMP_COMPRESS_TARGET;
+static float mujoco_jump_compress_rate = MUJOCO_JUMP_COMPRESS_RATE;
+static float mujoco_jump_compress_support_scale = MUJOCO_JUMP_COMPRESS_SUPPORT_SCALE;
+static float mujoco_jump_compress_tolerance = MUJOCO_JUMP_COMPRESS_TOLERANCE;
+static float mujoco_jump_compress_hold_time = MUJOCO_JUMP_COMPRESS_HOLD_TIME;
+static float mujoco_jump_compress_timeout = MUJOCO_JUMP_COMPRESS_TIMEOUT;
+static float mujoco_jump_leg_swing_offset = MUJOCO_JUMP_LEG_SWING_OFFSET;
+static float mujoco_jump_leg_swing_kp = MUJOCO_JUMP_LEG_SWING_KP;
+static float mujoco_jump_leg_swing_kd = MUJOCO_JUMP_LEG_SWING_KD;
+static float mujoco_jump_leg_swing_limit = MUJOCO_JUMP_LEG_SWING_LIMIT;
+static float mujoco_jump_extend_l0 = MUJOCO_JUMP_EXTEND_L0;
+static float mujoco_jump_extend_l0_set = INIT_LEG_LENGTH;
+static float mujoco_jump_extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN;
+static float mujoco_jump_landing_l0_set = INIT_LEG_LENGTH;
+static float mujoco_jump_landing_support_scale = 1.0f;
+static float mujoco_jump_landing_pid_scale = 1.0f;
+static float mujoco_jump_landing_balance_f0 = 0.0f;
+static float mujoco_jump_landing_balance_l0 = 0.0f;
+static float mujoco_jump_lqr_tp_weight = 1.0f;
+static float mujoco_jump_split_tp_weight = 1.0f;
+static float mujoco_jump_pitch_tp_weight = 0.0f;
+static float mujoco_jump_leg_swing_tp_weight = 0.0f;
 
 static float sim_mit_torque(float position_set, float velocity_set, float kp, float kd, float torque_ff,
                             const DM_Motor_Info_Typedef *motor)
@@ -93,289 +156,42 @@ static float sim_airborne_pose_torque(int joint_index)
                            sim_airborne_pose_torque_limit);
 }
 
-static int sim_jump_phase(void)
+static void sim_sync_jump_command(void)
 {
-    return chassis_move.jump_flag > chassis_move.jump_flag2
-               ? chassis_move.jump_flag
-               : chassis_move.jump_flag2;
-}
-
-static float sim_min_wheel_clearance(void)
-{
-    return fminf(sim_wheel_clearance_m[0], sim_wheel_clearance_m[1]);
-}
-
-static void sim_set_jump_phase(int phase)
-{
-    jump_time_l = 0;
-    jump_time_r = 0;
-    chassis_move.jump_flag = phase;
-    chassis_move.jump_flag2 = phase;
-}
-
-static void sim_finish_jump(void)
-{
-    sim_set_jump_phase(0);
-    sim_jump_flight_active = 0;
-    sim_jump_has_been_airborne = 0;
-    sim_jump_landing_elapsed = 0.0f;
-    sim_jump_touch_elapsed = 0.0f;
-    sim_jump_recover_elapsed = 0.0f;
-    mujoco_jump_landing_l0_set = INIT_LEG_LENGTH;
-    mujoco_jump_landing_support_scale = 1.0f;
-    mujoco_jump_landing_pid_scale = 1.0f;
-    mujoco_jump_landing_balance_f0 = 0.0f;
-    mujoco_jump_landing_balance_l0 = 0.0f;
-    chassis_move.leg_set = INIT_LEG_LENGTH;
-    chassis_move.last_leg_set = INIT_LEG_LENGTH;
-}
-
-static int sim_first_touch_detected(void)
-{
-    const int contact_force_ok =
-        sim_wheel_contact_normal_n[0] >= sim_jump_touchdown_force ||
-        sim_wheel_contact_normal_n[1] >= sim_jump_touchdown_force;
-    const int geometric_touch_ok =
-        sim_jump_has_been_airborne &&
-        !sim_airborne &&
-        sim_min_wheel_clearance() <= 0.003f;
-    return contact_force_ok || geometric_touch_ok;
-}
-
-static int sim_stable_touch_detected(void)
-{
-    return sim_wheel_contact_normal_n[0] >= sim_jump_touchdown_force &&
-           sim_wheel_contact_normal_n[1] >= sim_jump_touchdown_force;
-}
-
-static void sim_move_landing_l0_toward(float target, float rate, float dt)
-{
-    const float step = fabsf(rate) * dt;
-    if (mujoco_jump_landing_l0_set < target)
-    {
-        mujoco_jump_landing_l0_set += step;
-        if (mujoco_jump_landing_l0_set > target)
-        {
-            mujoco_jump_landing_l0_set = target;
-        }
-    }
-    else
-    {
-        mujoco_jump_landing_l0_set -= step;
-        if (mujoco_jump_landing_l0_set < target)
-        {
-            mujoco_jump_landing_l0_set = target;
-        }
-    }
-}
-
-static void sim_update_jump_landing_balance(float dt)
-{
-    const int phase = sim_jump_phase();
-    if (phase < 4 || phase > 6)
-    {
-        mujoco_jump_landing_balance_f0 = 0.0f;
-        mujoco_jump_landing_balance_l0 = 0.0f;
-        return;
-    }
-
-    const float roll_error = INS.Roll - INIT_ROLL;
-    const float roll_term =
-        sim_jump_landing_roll_f0_kp * roll_error +
-        sim_jump_landing_roll_f0_kd * INS.Gyro[0];
-    const float contact_term =
-        sim_jump_landing_contact_f0_kp *
-        (sim_wheel_contact_normal_n[0] - sim_wheel_contact_normal_n[1]);
-
-    mujoco_jump_landing_balance_f0 =
-        sim_clamp_float(roll_term + contact_term,
-                        -sim_jump_landing_balance_f0_limit,
-                        sim_jump_landing_balance_f0_limit);
-
-    float balance_l0_target;
-    float balance_l0_rate;
-    if (phase == 4)
-    {
-        const float clearance_error =
-            sim_wheel_clearance_m[0] - sim_wheel_clearance_m[1];
-        balance_l0_target =
-            sim_clamp_float(sim_jump_landing_clearance_l0_kp * clearance_error,
-                            -sim_jump_landing_clearance_l0_limit,
-                            sim_jump_landing_clearance_l0_limit);
-        balance_l0_rate = sim_jump_landing_clearance_l0_rate;
-    }
-    else
-    {
-        balance_l0_target =
-            sim_clamp_float(-sim_jump_landing_roll_l0_kp * roll_error -
-                                sim_jump_landing_roll_l0_kd * INS.Gyro[0],
-                            -sim_jump_landing_balance_l0_limit,
-                            sim_jump_landing_balance_l0_limit);
-        balance_l0_rate = sim_jump_landing_clearance_l0_rate;
-    }
-
-    const float max_delta = fabsf(balance_l0_rate) * dt;
-    const float balance_l0_delta =
-        sim_clamp_float(balance_l0_target - mujoco_jump_landing_balance_l0,
-                        -max_delta,
-                        max_delta);
-    mujoco_jump_landing_balance_l0 += balance_l0_delta;
-}
-
-static void sim_update_jump_compression(float dt)
-{
-    if (chassis_move.jump_flag != 1 || chassis_move.jump_flag2 != 1)
+    static int last_phase = JUMP_PHASE_STAND;
+    const JumpCommand *command = JumpStateMachine_GetCommand(&sim_jump_machine);
+    if (command == 0)
     {
         return;
     }
 
-    sim_jump_compress_elapsed += dt;
-    mujoco_jump_compress_l0_set -= mujoco_jump_compress_rate * dt;
-    if (mujoco_jump_compress_l0_set < mujoco_jump_compress_target)
-    {
-        mujoco_jump_compress_l0_set = mujoco_jump_compress_target;
-    }
-
-    if (mujoco_jump_compress_l0_set <= mujoco_jump_compress_target + 1.0e-4f &&
-        left.L0 <= mujoco_jump_compress_target + mujoco_jump_compress_tolerance &&
-        right.L0 <= mujoco_jump_compress_target + mujoco_jump_compress_tolerance)
-    {
-        sim_jump_compress_hold_elapsed += dt;
-    }
-    else
-    {
-        sim_jump_compress_hold_elapsed = 0.0f;
-    }
-
-    if (sim_jump_compress_hold_elapsed >= mujoco_jump_compress_hold_time)
+    if ((int)command->phase != last_phase)
     {
         jump_time_l = 0;
         jump_time_r = 0;
-        chassis_move.jump_flag = 2;
-        chassis_move.jump_flag2 = 2;
+        PID_Calc_Clear(&legl_pid);
+        PID_Calc_Clear(&legr_pid);
+        last_phase = (int)command->phase;
     }
-    else if (sim_jump_compress_elapsed >= mujoco_jump_compress_timeout)
+
+    chassis_move.jump_flag = (uint8_t)command->phase;
+    chassis_move.jump_flag2 = (uint8_t)command->phase;
+    mujoco_jump_compress_l0_set = command->compress_l0_set;
+    mujoco_jump_extend_l0_set = command->extend_l0_set;
+    mujoco_jump_landing_l0_set = command->landing_l0_set;
+    mujoco_jump_landing_support_scale = command->landing_support_scale;
+    mujoco_jump_landing_pid_scale = command->landing_pid_scale;
+    mujoco_jump_landing_balance_f0 = command->landing_balance_f0;
+    mujoco_jump_landing_balance_l0 = command->landing_balance_l0;
+    mujoco_jump_lqr_tp_weight = command->lqr_tp_weight;
+    mujoco_jump_split_tp_weight = command->split_tp_weight;
+    mujoco_jump_pitch_tp_weight = command->pitch_tp_weight;
+    mujoco_jump_leg_swing_tp_weight = command->leg_swing_tp_weight;
+
+    if (command->just_finished)
     {
-        jump_time_l = 0;
-        jump_time_r = 0;
-        chassis_move.jump_flag = 0;
-        chassis_move.jump_flag2 = 0;
-        sim_jump_flight_active = 0;
-        sim_jump_has_been_airborne = 0;
         chassis_move.leg_set = INIT_LEG_LENGTH;
         chassis_move.last_leg_set = INIT_LEG_LENGTH;
-    }
-}
-
-static void sim_update_jump_takeoff(void)
-{
-    if (sim_airborne &&
-        (chassis_move.jump_flag == 2 || chassis_move.jump_flag2 == 2))
-    {
-        jump_time_l = 0;
-        jump_time_r = 0;
-        chassis_move.jump_flag = 3;
-        chassis_move.jump_flag2 = 3;
-    }
-}
-
-static void sim_update_jump_landing(float dt)
-{
-    const int phase = sim_jump_phase();
-    const int first_touch = sim_first_touch_detected();
-    const int stable_touch = sim_stable_touch_detected();
-
-    if (phase == 3)
-    {
-        sim_jump_landing_elapsed = 0.0f;
-        sim_jump_touch_elapsed = 0.0f;
-        sim_jump_recover_elapsed = 0.0f;
-
-        if (first_touch)
-        {
-            mujoco_jump_landing_l0_set =
-                sim_clamp_float(fmaxf(left.L0, right.L0),
-                                sim_jump_buffer_l0,
-                                sim_jump_preland_l0);
-            mujoco_jump_landing_support_scale = sim_jump_buffer_support_scale;
-            mujoco_jump_landing_pid_scale = sim_jump_buffer_pid_scale;
-            sim_set_jump_phase(5);
-        }
-        else if (sim_jump_has_been_airborne &&
-                 sim_body_z_vel < -0.05f &&
-                 sim_min_wheel_clearance() < sim_jump_preland_clearance)
-        {
-            mujoco_jump_landing_l0_set =
-                sim_clamp_float(fmaxf(left.L0, right.L0),
-                                INIT_LEG_LENGTH,
-                                sim_jump_preland_l0);
-            mujoco_jump_landing_support_scale = 0.0f;
-            mujoco_jump_landing_pid_scale = sim_jump_preland_pid_scale;
-            sim_set_jump_phase(4);
-        }
-    }
-    else if (phase == 4)
-    {
-        sim_jump_landing_elapsed += dt;
-        mujoco_jump_landing_support_scale = 0.0f;
-        mujoco_jump_landing_pid_scale = sim_jump_preland_pid_scale;
-        sim_move_landing_l0_toward(sim_jump_preland_l0,
-                                   sim_jump_preland_rate,
-                                   dt);
-
-        if (first_touch)
-        {
-            sim_jump_landing_elapsed = 0.0f;
-            sim_jump_touch_elapsed = 0.0f;
-            mujoco_jump_landing_support_scale = sim_jump_buffer_support_scale;
-            mujoco_jump_landing_pid_scale = sim_jump_buffer_pid_scale;
-            sim_set_jump_phase(5);
-        }
-    }
-    else if (phase == 5)
-    {
-        sim_jump_landing_elapsed += dt;
-        sim_move_landing_l0_toward(sim_jump_buffer_l0,
-                                   sim_jump_buffer_rate,
-                                   dt);
-        mujoco_jump_landing_support_scale = sim_jump_buffer_support_scale;
-        mujoco_jump_landing_pid_scale = sim_jump_buffer_pid_scale;
-
-        if (stable_touch)
-        {
-            sim_jump_touch_elapsed += dt;
-        }
-        else
-        {
-            sim_jump_touch_elapsed = 0.0f;
-        }
-
-        if (sim_jump_touch_elapsed >= sim_jump_touchdown_hold &&
-            sim_jump_landing_elapsed >= sim_jump_buffer_hold_time)
-        {
-            sim_jump_landing_elapsed = 0.0f;
-            sim_jump_recover_elapsed = 0.0f;
-            mujoco_jump_landing_support_scale = 1.0f;
-            mujoco_jump_landing_pid_scale = 0.65f;
-            sim_set_jump_phase(6);
-        }
-    }
-    else if (phase == 6)
-    {
-        sim_jump_recover_elapsed += dt;
-        sim_move_landing_l0_toward(INIT_LEG_LENGTH,
-                                   sim_jump_recover_rate,
-                                   dt);
-        mujoco_jump_landing_support_scale = 1.0f;
-        mujoco_jump_landing_pid_scale = 0.65f;
-
-        if (sim_jump_recover_elapsed >= sim_jump_recover_time &&
-            fabsf(mujoco_jump_landing_l0_set - INIT_LEG_LENGTH) < 0.005f &&
-            fabsf(INS.Gyro[1]) < sim_jump_recover_pitch_rate &&
-            stable_touch)
-        {
-            sim_finish_jump();
-        }
     }
 }
 
@@ -429,18 +245,9 @@ void SimController_SetStandL0Pitch(float l0_pitch)
 void SimController_Init(void)
 {
     memset(&INS, 0, sizeof(INS));
+    memset(&sim_jump_observation, 0, sizeof(sim_jump_observation));
 
-    sim_airborne = 0;
-    sim_jump_flight_active = 0;
-    sim_jump_has_been_airborne = 0;
-    sim_jump_landing_elapsed = 0.0f;
-    sim_jump_touch_elapsed = 0.0f;
-    sim_jump_recover_elapsed = 0.0f;
     sim_body_z_vel = 0.0f;
-    sim_wheel_clearance_m[0] = 0.0f;
-    sim_wheel_clearance_m[1] = 0.0f;
-    sim_wheel_contact_normal_n[0] = 0.0f;
-    sim_wheel_contact_normal_n[1] = 0.0f;
     INS.ins_flag = 1;
     chassis_move.start_flag = 1;
     chassis_move.mode = CHASSIS_STAND_UP;
@@ -459,6 +266,8 @@ void SimController_Init(void)
     ChassisL_init();
     ChassisR_init();
     Pensation_init();
+    JumpStateMachine_Init(&sim_jump_machine, &sim_jump_config);
+    sim_sync_jump_command();
     ConsoleStandUp();
     sim_apply_stand_joint_targets();
 }
@@ -497,6 +306,8 @@ void SimController_SetState(const SimControllerState *state)
     chassis_move.x_filter = state->body_x;
     chassis_move.v_filter = state->body_v;
     sim_body_z_vel = state->body_z_vel;
+    sim_body_forward_v = state->body_v;
+    sim_body_lateral_v = state->body_v_y;
 }
 
 void SimController_SetCommand(float v_set, float x_set, float leg_set, float roll_set, float yaw_set)
@@ -536,7 +347,7 @@ void SimController_SetJumpCompression(int enabled,
                                       float hold_time,
                                       float timeout)
 {
-    sim_jump_compression_enabled = enabled != 0;
+    sim_jump_config.compression_enabled = enabled != 0;
     mujoco_jump_compress_target = sim_clamp_float(target,
                                                    MIN_LEG_LENGTH,
                                                    INIT_LEG_LENGTH);
@@ -545,6 +356,13 @@ void SimController_SetJumpCompression(int enabled,
     mujoco_jump_compress_tolerance = fabsf(tolerance);
     mujoco_jump_compress_hold_time = fmaxf(0.0f, hold_time);
     mujoco_jump_compress_timeout = fmaxf(mujoco_jump_compress_hold_time, timeout);
+    sim_jump_config.compress_target = mujoco_jump_compress_target;
+    sim_jump_config.compress_rate = mujoco_jump_compress_rate;
+    sim_jump_config.compress_support_scale = mujoco_jump_compress_support_scale;
+    sim_jump_config.compress_tolerance = mujoco_jump_compress_tolerance;
+    sim_jump_config.compress_hold_time = mujoco_jump_compress_hold_time;
+    sim_jump_config.compress_timeout = mujoco_jump_compress_timeout;
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpLegSwing(float offset, float kp, float kd, float limit)
@@ -555,29 +373,55 @@ void SimController_SetJumpLegSwing(float offset, float kp, float kd, float limit
     mujoco_jump_leg_swing_limit = fabsf(limit);
 }
 
-void SimController_SetJumpExtendEndMargin(float margin)
+void SimController_SetJumpTpWeights(float lqr_weight,
+                                    float split_weight,
+                                    float pitch_weight,
+                                    float leg_swing_weight)
 {
-    mujoco_jump_extend_end_margin = margin;
+    sim_jump_config.lqr_tp_weight = lqr_weight;
+    sim_jump_config.split_tp_weight = split_weight;
+    sim_jump_config.pitch_tp_weight = pitch_weight;
+    sim_jump_config.leg_swing_tp_weight = leg_swing_weight;
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
+}
+
+void SimController_SetJumpExtend(float extend_l0,
+                                 float end_margin,
+                                 float extend_rate)
+{
+    mujoco_jump_extend_l0 = sim_clamp_float(extend_l0,
+                                            MIN_LEG_LENGTH,
+                                            MAX_LEG_LENGTH);
+    mujoco_jump_extend_end_margin = fmaxf(0.0f, end_margin);
+    sim_jump_config.extend_l0 = mujoco_jump_extend_l0;
+    sim_jump_config.extend_end_margin =
+        fminf(mujoco_jump_extend_end_margin,
+              fmaxf(0.0f, mujoco_jump_extend_l0 - MIN_LEG_LENGTH));
+    sim_jump_config.extend_rate = fmaxf(0.0f, extend_rate);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpLandingLegLengths(float preland_l0, float buffer_l0)
 {
-    sim_jump_preland_l0 = sim_clamp_float(preland_l0,
-                                          INIT_LEG_LENGTH,
-                                          MAX_LEG_LENGTH);
-    sim_jump_buffer_l0 = sim_clamp_float(buffer_l0,
-                                         MIN_LEG_LENGTH,
-                                         sim_jump_preland_l0);
+    sim_jump_config.preland_l0 = sim_clamp_float(preland_l0,
+                                                 INIT_LEG_LENGTH,
+                                                 MAX_LEG_LENGTH);
+    sim_jump_config.buffer_l0 = sim_clamp_float(buffer_l0,
+                                                MIN_LEG_LENGTH,
+                                                sim_jump_config.preland_l0);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpPrelandClearance(float clearance)
 {
-    sim_jump_preland_clearance = fmaxf(0.0f, clearance);
+    sim_jump_config.preland_clearance = fmaxf(0.0f, clearance);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpPrelandPidScale(float pid_scale)
 {
-    sim_jump_preland_pid_scale = fmaxf(0.0f, pid_scale);
+    sim_jump_config.preland_pid_scale = fmaxf(0.0f, pid_scale);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpLandingDynamics(float preland_rate,
@@ -585,10 +429,11 @@ void SimController_SetJumpLandingDynamics(float preland_rate,
                                           float buffer_support_scale,
                                           float buffer_pid_scale)
 {
-    sim_jump_preland_rate = fmaxf(0.0f, preland_rate);
-    sim_jump_buffer_rate = fmaxf(0.0f, buffer_rate);
-    sim_jump_buffer_support_scale = fmaxf(0.0f, buffer_support_scale);
-    sim_jump_buffer_pid_scale = fmaxf(0.0f, buffer_pid_scale);
+    sim_jump_config.preland_rate = fmaxf(0.0f, preland_rate);
+    sim_jump_config.buffer_rate = fmaxf(0.0f, buffer_rate);
+    sim_jump_config.buffer_support_scale = fmaxf(0.0f, buffer_support_scale);
+    sim_jump_config.buffer_pid_scale = fmaxf(0.0f, buffer_pid_scale);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpLandingBalance(float roll_kp,
@@ -596,28 +441,31 @@ void SimController_SetJumpLandingBalance(float roll_kp,
                                          float contact_kp,
                                          float limit)
 {
-    sim_jump_landing_roll_f0_kp = fmaxf(0.0f, roll_kp);
-    sim_jump_landing_roll_f0_kd = fmaxf(0.0f, roll_kd);
-    sim_jump_landing_contact_f0_kp = fmaxf(0.0f, contact_kp);
-    sim_jump_landing_balance_f0_limit = fmaxf(0.0f, limit);
+    sim_jump_config.landing_roll_f0_kp = fmaxf(0.0f, roll_kp);
+    sim_jump_config.landing_roll_f0_kd = fmaxf(0.0f, roll_kd);
+    sim_jump_config.landing_contact_f0_kp = fmaxf(0.0f, contact_kp);
+    sim_jump_config.landing_balance_f0_limit = fmaxf(0.0f, limit);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpLandingL0Balance(float roll_kp,
                                            float roll_kd,
                                            float limit)
 {
-    sim_jump_landing_roll_l0_kp = fmaxf(0.0f, roll_kp);
-    sim_jump_landing_roll_l0_kd = fmaxf(0.0f, roll_kd);
-    sim_jump_landing_balance_l0_limit = fmaxf(0.0f, limit);
+    sim_jump_config.landing_roll_l0_kp = fmaxf(0.0f, roll_kp);
+    sim_jump_config.landing_roll_l0_kd = fmaxf(0.0f, roll_kd);
+    sim_jump_config.landing_balance_l0_limit = fmaxf(0.0f, limit);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetJumpLandingClearanceBalance(float kp,
                                                   float rate,
                                                   float limit)
 {
-    sim_jump_landing_clearance_l0_kp = fmaxf(0.0f, kp);
-    sim_jump_landing_clearance_l0_rate = fmaxf(0.0f, rate);
-    sim_jump_landing_clearance_l0_limit = fmaxf(0.0f, limit);
+    sim_jump_config.landing_clearance_l0_kp = fmaxf(0.0f, kp);
+    sim_jump_config.landing_clearance_l0_rate = fmaxf(0.0f, rate);
+    sim_jump_config.landing_clearance_l0_limit = fmaxf(0.0f, limit);
+    JumpStateMachine_SetConfig(&sim_jump_machine, &sim_jump_config);
 }
 
 void SimController_SetAirbornePoseTarget(const float joint_pos[4])
@@ -641,19 +489,7 @@ void SimController_SetAirbornePoseGains(float kp, float kd, float torque_limit)
 
 void SimController_SetAirborne(int airborne)
 {
-    sim_airborne = airborne != 0;
-    if (sim_jump_flight_active && sim_airborne)
-    {
-        sim_jump_has_been_airborne = 1;
-    }
-    else if (sim_jump_flight_active &&
-             sim_jump_has_been_airborne &&
-             chassis_move.jump_flag == 0 &&
-             chassis_move.jump_flag2 == 0)
-    {
-        sim_jump_flight_active = 0;
-        sim_jump_has_been_airborne = 0;
-    }
+    sim_jump_observation.airborne = airborne != 0;
 }
 
 void SimController_SetFlightObservation(int airborne,
@@ -663,13 +499,13 @@ void SimController_SetFlightObservation(int airborne,
     SimController_SetAirborne(airborne);
     if (wheel_clearance_m != 0)
     {
-        sim_wheel_clearance_m[0] = wheel_clearance_m[0];
-        sim_wheel_clearance_m[1] = wheel_clearance_m[1];
+        sim_jump_observation.wheel_clearance[0] = wheel_clearance_m[0];
+        sim_jump_observation.wheel_clearance[1] = wheel_clearance_m[1];
     }
     if (wheel_contact_normal_n != 0)
     {
-        sim_wheel_contact_normal_n[0] = wheel_contact_normal_n[0];
-        sim_wheel_contact_normal_n[1] = wheel_contact_normal_n[1];
+        sim_jump_observation.wheel_contact_normal[0] = wheel_contact_normal_n[0];
+        sim_jump_observation.wheel_contact_normal[1] = wheel_contact_normal_n[1];
     }
 }
 
@@ -680,52 +516,32 @@ void SimController_SetMode(int mode)
 
 int SimController_RequestJump(void)
 {
-    if (sim_jump_flight_active ||
-        chassis_move.jump_flag != 0 ||
-        chassis_move.jump_flag2 != 0)
+    if (chassis_move.jump_flag != 0 || chassis_move.jump_flag2 != 0)
     {
         return 0;
     }
-
     jump_time_l = 0;
     jump_time_r = 0;
-    sim_jump_flight_active = 1;
-    sim_jump_has_been_airborne = 0;
-    sim_jump_compress_elapsed = 0.0f;
-    sim_jump_compress_hold_elapsed = 0.0f;
-    sim_jump_landing_elapsed = 0.0f;
-    sim_jump_touch_elapsed = 0.0f;
-    sim_jump_recover_elapsed = 0.0f;
-    mujoco_jump_compress_l0_set =
-        fmaxf(mujoco_jump_compress_target, fmaxf(left.L0, right.L0));
-    mujoco_jump_landing_l0_set = INIT_LEG_LENGTH;
-    mujoco_jump_landing_support_scale = 1.0f;
-    mujoco_jump_landing_pid_scale = 1.0f;
-    mujoco_jump_landing_balance_f0 = 0.0f;
-    mujoco_jump_landing_balance_l0 = 0.0f;
-    chassis_move.jump_flag = sim_jump_compression_enabled ? 1 : 2;
-    chassis_move.jump_flag2 = sim_jump_compression_enabled ? 1 : 2;
+    chassis_move.jump_flag = 1;
+    chassis_move.jump_flag2 = 1;
     return 1;
 }
 
 int SimController_IsJumping(void)
 {
-    return sim_jump_flight_active ||
-           chassis_move.jump_flag != 0 ||
-           chassis_move.jump_flag2 != 0;
+    return chassis_move.jump_flag != 0 || chassis_move.jump_flag2 != 0;
+}
+
+float SimController_GetJumpWheelBalanceBlend(void)
+{
+    return 1.0f;
 }
 
 void SimController_Step(float dt)
 {
-    sim_dt_s = dt;
-    (void)sim_dt_s;
-
+    (void)dt;
     ChassisL_feedback_update();
     ChassisR_feedback_update();
-    sim_update_jump_compression(dt);
-    sim_update_jump_takeoff();
-    sim_update_jump_landing(dt);
-    sim_update_jump_landing_balance(dt);
 
     ChassisR_control_loop();
     ChassisL_control_loop();
@@ -751,19 +567,16 @@ void SimController_GetOutput(SimControllerOutput *output)
     switch (chassis_move.mode)
     {
     case CHASSIS_STAND_UP:
-        // MuJoCo ground-init is already upright. During the timed STAND_UP
-        // window, use normal VMC support so the closed-chain leg does not
-        // drift into the folded branch before switching to SAFE.
-        output->joint_torque[0] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[1],
+        output->joint_torque[0] = sim_mit_torque(left.position_set[0], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
                                                  chassis_move.joint_motor[0]);
-        output->joint_torque[1] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -left.torque_set[0],
+        output->joint_torque[1] = sim_mit_torque(left.position_set[1], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
                                                  chassis_move.joint_motor[1]);
-        output->joint_torque[2] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -right.torque_set[0],
+        output->joint_torque[2] = sim_mit_torque(right.position_set[0], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
                                                  chassis_move.joint_motor[2]);
-        output->joint_torque[3] = sim_mit_torque(0.0f, 0.0f, NORMAL_POS_KP, NORMAL_POS_KD, -right.torque_set[1],
+        output->joint_torque[3] = sim_mit_torque(right.position_set[1], 0.0f, DEBUG_POS_KP, DEBUG_POS_KD, 0.0f,
                                                  chassis_move.joint_motor[3]);
-        output->wheel_torque[0] = 0.0f;
-        output->wheel_torque[1] = 0.0f;
+        output->wheel_torque[0] = left.wheel_T;
+        output->wheel_torque[1] = right.wheel_T;
         break;
 
     case CHASSIS_CALIBRATE:
@@ -805,22 +618,37 @@ void SimController_GetOutput(SimControllerOutput *output)
         break;
     }
 
-    if (sim_airborne_pose_valid &&
-        (chassis_move.jump_flag == 3 || chassis_move.jump_flag2 == 3))
-    {
-        for (int i = 0; i < 4; ++i)
-        {
-            output->joint_torque[i] = sim_airborne_pose_torque(i);
-        }
-    }
-
     if (chassis_move.mode == CHASSIS_CALIBRATE)
     {
         output->wheel_torque[0] = left.wheel_T;
         output->wheel_torque[1] = right.wheel_T;
     }
-    else if (chassis_move.mode == CHASSIS_STAND_UP || chassis_move.mode == CHASSIS_SAFE)
+}
+
+void SimController_GetControlBreakdown(SimControllerControlBreakdown *breakdown)
+{
+    if (breakdown == 0)
     {
-        sim_apply_native_wheel_balance(output);
+        return;
     }
+
+    memset(breakdown, 0, sizeof(*breakdown));
+    const vmc_leg_t *legs[2] = {&left, &right};
+    for (int leg = 0; leg < 2; ++leg)
+    {
+        breakdown->l0[leg] = legs[leg]->L0;
+        breakdown->f0_total[leg] = legs[leg]->F0;
+        breakdown->tp_total[leg] = legs[leg]->Tp;
+    }
+
+    breakdown->joint_torque_f0[0] = -left.j21 * left.F0;
+    breakdown->joint_torque_f0[1] = -left.j11 * left.F0;
+    breakdown->joint_torque_f0[2] = -right.j11 * right.F0;
+    breakdown->joint_torque_f0[3] = -right.j21 * right.F0;
+    breakdown->joint_torque_tp[0] = -left.j22 * left.Tp;
+    breakdown->joint_torque_tp[1] = -left.j12 * left.Tp;
+    breakdown->joint_torque_tp[2] = -right.j12 * right.Tp;
+    breakdown->joint_torque_tp[3] = -right.j22 * right.Tp;
+    breakdown->tp_weight[0] = 1.0f;
+    breakdown->tp_weight[1] = 1.0f;
 }

@@ -15,6 +15,10 @@ enum
 typedef struct
 {
     double time_s;
+    double body_x_m;
+    double body_y_m;
+    double body_forward_v_mps;
+    double body_lateral_v_mps;
     double base_z_m;
     double base_rise_m;
     double wheel_clearance_m;
@@ -24,8 +28,10 @@ typedef struct
     double vmc_support_force_raw_n[2];
     double vmc_support_force_filtered_n[2];
     double contact_normal_force_n[2];
+    double requested_torque_nm[TELEMETRY_MOTOR_COUNT];
     double command_torque_nm[TELEMETRY_MOTOR_COUNT];
     double applied_torque_nm[TELEMETRY_MOTOR_COUNT];
+    SimControllerControlBreakdown control_breakdown;
     int vmc_airborne[2];
     int contact_airborne;
     int jump_active;
@@ -56,12 +62,16 @@ struct JumpTelemetry
     double max_base_rise_m;
     double max_base_z_m;
     double max_wheel_clearance_m;
+    double peak_requested_abs_nm[TELEMETRY_MOTOR_COUNT];
+    double peak_requested_signed_nm[TELEMETRY_MOTOR_COUNT];
+    double peak_requested_time_s[TELEMETRY_MOTOR_COUNT];
     double peak_command_abs_nm[TELEMETRY_MOTOR_COUNT];
     double peak_command_signed_nm[TELEMETRY_MOTOR_COUNT];
     double peak_command_time_s[TELEMETRY_MOTOR_COUNT];
     double peak_applied_abs_nm[TELEMETRY_MOTOR_COUNT];
     double peak_applied_signed_nm[TELEMETRY_MOTOR_COUNT];
     double peak_applied_time_s[TELEMETRY_MOTOR_COUNT];
+    unsigned long saturation_samples[TELEMETRY_MOTOR_COUNT];
 };
 
 static const char *const motor_names[TELEMETRY_MOTOR_COUNT] = {
@@ -183,6 +193,10 @@ JumpTelemetry *JumpTelemetry_Create(const char *output_prefix,
 
 void JumpTelemetry_Record(JumpTelemetry *telemetry,
                           double time_s,
+                          double body_x_m,
+                          double body_y_m,
+                          double body_forward_v_mps,
+                          double body_lateral_v_mps,
                           double base_z_m,
                           double wheel_clearance_m,
                           const double wheel_clearance_lr_m[2],
@@ -193,8 +207,10 @@ void JumpTelemetry_Record(JumpTelemetry *telemetry,
                           const int vmc_airborne[2],
                           const double contact_normal_force_n[2],
                           int contact_airborne,
+                          const double requested_torque_nm[6],
                           const double command_torque_nm[6],
                           const double applied_torque_nm[6],
+                          const SimControllerControlBreakdown *control_breakdown,
                           int jump_active,
                           int jump_phase,
                           int airborne)
@@ -206,8 +222,10 @@ void JumpTelemetry_Record(JumpTelemetry *telemetry,
         base_rpy_rad == 0 ||
         vmc_airborne == 0 ||
         contact_normal_force_n == 0 ||
+        requested_torque_nm == 0 ||
         command_torque_nm == 0 ||
         applied_torque_nm == 0 ||
+        control_breakdown == 0 ||
         !reserve_sample(telemetry))
     {
         return;
@@ -272,6 +290,10 @@ void JumpTelemetry_Record(JumpTelemetry *telemetry,
     JumpTelemetrySample *sample =
         &telemetry->samples[telemetry->sample_count++];
     sample->time_s = time_s;
+    sample->body_x_m = body_x_m;
+    sample->body_y_m = body_y_m;
+    sample->body_forward_v_mps = body_forward_v_mps;
+    sample->body_lateral_v_mps = body_lateral_v_mps;
     sample->base_z_m = base_z_m;
     sample->base_rise_m = base_rise_m;
     sample->wheel_clearance_m = wheel_clearance_m;
@@ -298,12 +320,16 @@ void JumpTelemetry_Record(JumpTelemetry *telemetry,
     sample->jump_active = jump_active;
     sample->jump_phase = jump_phase;
     sample->airborne = airborne;
+    memcpy(sample->requested_torque_nm,
+           requested_torque_nm,
+           sizeof(sample->requested_torque_nm));
     memcpy(sample->command_torque_nm,
            command_torque_nm,
            sizeof(sample->command_torque_nm));
     memcpy(sample->applied_torque_nm,
            applied_torque_nm,
            sizeof(sample->applied_torque_nm));
+    sample->control_breakdown = *control_breakdown;
 
     if (event_window)
     {
@@ -320,8 +346,16 @@ void JumpTelemetry_Record(JumpTelemetry *telemetry,
 
         for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
         {
+            const double requested_abs = fabs(requested_torque_nm[motor]);
             const double command_abs = fabs(command_torque_nm[motor]);
             const double applied_abs = fabs(applied_torque_nm[motor]);
+            if (requested_abs > telemetry->peak_requested_abs_nm[motor])
+            {
+                telemetry->peak_requested_abs_nm[motor] = requested_abs;
+                telemetry->peak_requested_signed_nm[motor] =
+                    requested_torque_nm[motor];
+                telemetry->peak_requested_time_s[motor] = time_s;
+            }
             if (command_abs > telemetry->peak_command_abs_nm[motor])
             {
                 telemetry->peak_command_abs_nm[motor] = command_abs;
@@ -335,6 +369,11 @@ void JumpTelemetry_Record(JumpTelemetry *telemetry,
                 telemetry->peak_applied_signed_nm[motor] =
                     applied_torque_nm[motor];
                 telemetry->peak_applied_time_s[motor] = time_s;
+            }
+            if (fabs(requested_torque_nm[motor] -
+                     command_torque_nm[motor]) > 1.0e-6)
+            {
+                ++telemetry->saturation_samples[motor];
             }
         }
     }
@@ -353,6 +392,7 @@ static int write_csv(const JumpTelemetry *telemetry, const char *path)
 
     fprintf(file,
             "time_s,jump_active,jump_phase,airborne,"
+            "body_x_m,body_y_m,body_forward_v_mps,body_lateral_v_mps,"
             "base_z_m,base_rise_from_takeoff_m,wheel_clearance_m,"
             "wheel_left_clearance_m,wheel_right_clearance_m,"
             "base_accel_z_mps2,"
@@ -364,11 +404,36 @@ static int write_csv(const JumpTelemetry *telemetry, const char *path)
             "contact_airborne");
     for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
     {
+        fprintf(file, ",requested_%s_nm", motor_names[motor]);
+    }
+    for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
+    {
         fprintf(file, ",cmd_%s_nm", motor_names[motor]);
     }
     for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
     {
         fprintf(file, ",applied_%s_nm", motor_names[motor]);
+    }
+    fprintf(file,
+            ",left_l0_m,right_l0_m"
+            ",left_f0_total_n,right_f0_total_n"
+            ",left_f0_gravity_n,right_f0_gravity_n"
+            ",left_f0_leg_pid_n,right_f0_leg_pid_n"
+            ",left_f0_jump_ff_n,right_f0_jump_ff_n"
+            ",left_f0_balance_n,right_f0_balance_n"
+            ",left_tp_total_nm,right_tp_total_nm"
+            ",left_tp_lqr_nm,right_tp_lqr_nm"
+            ",left_tp_split_nm,right_tp_split_nm"
+            ",left_tp_pitch_nm,right_tp_pitch_nm"
+            ",left_tp_leg_swing_nm,right_tp_leg_swing_nm"
+            ",tp_weight_lqr,tp_weight_split,tp_weight_pitch,tp_weight_leg_swing");
+    for (int joint = 0; joint < 4; ++joint)
+    {
+        fprintf(file, ",vmc_joint%d_f0_nm", joint);
+    }
+    for (int joint = 0; joint < 4; ++joint)
+    {
+        fprintf(file, ",vmc_joint%d_tp_nm", joint);
     }
     fputc('\n', file);
 
@@ -376,11 +441,15 @@ static int write_csv(const JumpTelemetry *telemetry, const char *path)
     {
         const JumpTelemetrySample *sample = &telemetry->samples[index];
         fprintf(file,
-                "%.6f,%d,%d,%d,%.9f,",
+                "%.6f,%d,%d,%d,%.9f,%.9f,%.9f,%.9f,%.9f,",
                 sample->time_s,
                 sample->jump_active,
                 sample->jump_phase,
                 sample->airborne,
+                sample->body_x_m,
+                sample->body_y_m,
+                sample->body_forward_v_mps,
+                sample->body_lateral_v_mps,
                 sample->base_z_m);
         if (isnan(sample->base_rise_m))
         {
@@ -412,11 +481,64 @@ static int write_csv(const JumpTelemetry *telemetry, const char *path)
                 sample->contact_airborne);
         for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
         {
+            fprintf(file, ",%.9f", sample->requested_torque_nm[motor]);
+        }
+        for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
+        {
             fprintf(file, ",%.9f", sample->command_torque_nm[motor]);
         }
         for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
         {
             fprintf(file, ",%.9f", sample->applied_torque_nm[motor]);
+        }
+        const SimControllerControlBreakdown *control =
+            &sample->control_breakdown;
+        fprintf(file,
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f"
+                ",%.9f,%.9f,%.9f,%.9f",
+                control->l0[0],
+                control->l0[1],
+                control->f0_total[0],
+                control->f0_total[1],
+                control->f0_gravity[0],
+                control->f0_gravity[1],
+                control->f0_leg_pid[0],
+                control->f0_leg_pid[1],
+                control->f0_jump_ff[0],
+                control->f0_jump_ff[1],
+                control->f0_balance[0],
+                control->f0_balance[1],
+                control->tp_total[0],
+                control->tp_total[1],
+                control->tp_lqr[0],
+                control->tp_lqr[1],
+                control->tp_split[0],
+                control->tp_split[1],
+                control->tp_pitch[0],
+                control->tp_pitch[1],
+                control->tp_leg_swing[0],
+                control->tp_leg_swing[1],
+                control->tp_weight[0],
+                control->tp_weight[1],
+                control->tp_weight[2],
+                control->tp_weight[3]);
+        for (int joint = 0; joint < 4; ++joint)
+        {
+            fprintf(file, ",%.9f", control->joint_torque_f0[joint]);
+        }
+        for (int joint = 0; joint < 4; ++joint)
+        {
+            fprintf(file, ",%.9f", control->joint_torque_tp[joint]);
         }
         fputc('\n', file);
     }
@@ -1125,12 +1247,12 @@ int JumpTelemetry_Write(JumpTelemetry *telemetry)
            telemetry->contact_takeoff_time_s);
     for (int motor = 0; motor < TELEMETRY_MOTOR_COUNT; ++motor)
     {
-        printf("  %-12s applied_peak=% .3f Nm @ %.3f s | command_peak=% .3f Nm @ %.3f s\n",
+        printf("  %-12s applied=% .3f Nm | command=% .3f Nm | requested=% .3f Nm | saturated_samples=%lu\n",
                motor_names[motor],
                telemetry->peak_applied_signed_nm[motor],
-               telemetry->peak_applied_time_s[motor],
                telemetry->peak_command_signed_nm[motor],
-               telemetry->peak_command_time_s[motor]);
+               telemetry->peak_requested_signed_nm[motor],
+               telemetry->saturation_samples[motor]);
     }
 
     free(csv_path);

@@ -72,8 +72,8 @@ void VMC_calc_2(vmc_leg_t *vmc) // 计算期望的关节输出力矩
 	vmc->j21 = (vmc->l4 * arm_sin_f32(vmc->phi0 - vmc->phi2) * arm_sin_f32(vmc->phi3 - vmc->phi4)) / arm_sin_f32(vmc->phi3 - vmc->phi2);
 	vmc->j22 = (vmc->l4 * arm_cos_f32(vmc->phi0 - vmc->phi2) * arm_sin_f32(vmc->phi3 - vmc->phi4)) / (vmc->L0 * arm_sin_f32(vmc->phi3 - vmc->phi2));
 
-	vmc->torque_set[0] = vmc->j11 * vmc->F0 + vmc->j12 * vmc->Tp; // phi1分支/J1(J2)的期望力矩，F0为五连杆机构末端沿腿的推力
-	vmc->torque_set[1] = vmc->j21 * vmc->F0 + vmc->j22 * vmc->Tp; // phi4分支/J0(J3)的期望力矩，Tp为沿中心轴的力矩
+	vmc->torque_set[0] = vmc->j11 * vmc->F0 + vmc->j12 * vmc->Tp; // phi1分支/J1(J2)的期望力矩
+	vmc->torque_set[1] = vmc->j21 * vmc->F0 + vmc->j22 * vmc->Tp; // phi4分支/J0(J3)的期望力矩
 }
 
 uint8_t ground_detection(vmc_leg_t *vmc)

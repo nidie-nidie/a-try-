@@ -35,28 +35,6 @@ PID_Info_TypeDef roll_pid;
 PID_Info_TypeDef tp_pid;
 PID_Info_TypeDef turn_pid;
 uint32_t CHASS_FSM_TIME = 3; // 3ms的底盘控制周期，对齐底盘控制频率
-float mujoco_jump_thrust_ff = MUJOCO_JUMP_THRUST_FF;
-float mujoco_jump_pitch_target = MUJOCO_JUMP_PITCH_TARGET;
-float mujoco_jump_pitch_tp_kp = MUJOCO_JUMP_PITCH_TP_KP;
-float mujoco_jump_pitch_tp_kd = MUJOCO_JUMP_PITCH_TP_KD;
-float mujoco_jump_pitch_tp_limit = MUJOCO_JUMP_PITCH_TP_LIMIT;
-float mujoco_jump_compress_l0_set = INIT_LEG_LENGTH;
-float mujoco_jump_compress_target = MUJOCO_JUMP_COMPRESS_TARGET;
-float mujoco_jump_compress_rate = MUJOCO_JUMP_COMPRESS_RATE;
-float mujoco_jump_compress_support_scale = MUJOCO_JUMP_COMPRESS_SUPPORT_SCALE;
-float mujoco_jump_compress_tolerance = MUJOCO_JUMP_COMPRESS_TOLERANCE;
-float mujoco_jump_compress_hold_time = MUJOCO_JUMP_COMPRESS_HOLD_TIME;
-float mujoco_jump_compress_timeout = MUJOCO_JUMP_COMPRESS_TIMEOUT;
-float mujoco_jump_leg_swing_offset = MUJOCO_JUMP_LEG_SWING_OFFSET;
-float mujoco_jump_leg_swing_kp = MUJOCO_JUMP_LEG_SWING_KP;
-float mujoco_jump_leg_swing_kd = MUJOCO_JUMP_LEG_SWING_KD;
-float mujoco_jump_leg_swing_limit = MUJOCO_JUMP_LEG_SWING_LIMIT;
-float mujoco_jump_extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN;
-float mujoco_jump_landing_l0_set = INIT_LEG_LENGTH;
-float mujoco_jump_landing_support_scale = 1.0f;
-float mujoco_jump_landing_pid_scale = 1.0f;
-float mujoco_jump_landing_balance_f0 = 0.0f;
-float mujoco_jump_landing_balance_l0 = 0.0f;
 
 void mySaturate(float *in, float min, float max)
 {
@@ -242,8 +220,8 @@ void ConsoleStandUp(void)
 {
     // ===腿部位置控制===
     float phi1_phi4_l[2], phi1_phi4_r[2];
-    CalcPhi1AndPhi4(INIT_L0_PITCH, chassis_move.leg_set, phi1_phi4_l);
-    CalcPhi1AndPhi4(INIT_L0_PITCH, chassis_move.leg_set, phi1_phi4_r);
+    CalcPhi1AndPhi4(M_PI_2, chassis_move.leg_set, phi1_phi4_l);
+    CalcPhi1AndPhi4(M_PI_2, chassis_move.leg_set, phi1_phi4_r);
 
     // 当解算出的角度正常时，设置目标角度
     if (!(isnan(phi1_phi4_l[0]) || isnan(phi1_phi4_l[1]) || isnan(phi1_phi4_r[0]) ||

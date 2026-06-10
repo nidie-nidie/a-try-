@@ -24,6 +24,7 @@ typedef struct
     float body_y;             // m
     float body_z;             // m
     float body_v;             // m/s
+    float body_v_y;           // m/s
     float body_z_vel;         // m/s
 } SimControllerState;
 
@@ -32,6 +33,24 @@ typedef struct
     float joint_torque[4];    // Nm, same order as DM_8009_Motor[0..3]
     float wheel_torque[2];    // Nm, same order as LK_9025_Motor[0..1]
 } SimControllerOutput;
+
+typedef struct
+{
+    float l0[2];
+    float f0_total[2];
+    float f0_gravity[2];
+    float f0_leg_pid[2];
+    float f0_jump_ff[2];
+    float f0_balance[2];
+    float tp_total[2];
+    float tp_lqr[2];
+    float tp_split[2];
+    float tp_pitch[2];
+    float tp_leg_swing[2];
+    float joint_torque_f0[4];
+    float joint_torque_tp[4];
+    float tp_weight[4]; // lqr, split, pitch, leg swing
+} SimControllerControlBreakdown;
 
 void SimController_Init(void);
 void SimController_SetStandL0Pitch(float l0_pitch);
@@ -48,7 +67,13 @@ void SimController_SetJumpCompression(int enabled,
                                       float hold_time,
                                       float timeout);
 void SimController_SetJumpLegSwing(float offset, float kp, float kd, float limit);
-void SimController_SetJumpExtendEndMargin(float margin);
+void SimController_SetJumpTpWeights(float lqr_weight,
+                                    float split_weight,
+                                    float pitch_weight,
+                                    float leg_swing_weight);
+void SimController_SetJumpExtend(float extend_l0,
+                                 float end_margin,
+                                 float extend_rate);
 void SimController_SetJumpLandingLegLengths(float preland_l0, float buffer_l0);
 void SimController_SetJumpPrelandClearance(float clearance);
 void SimController_SetJumpPrelandPidScale(float pid_scale);
@@ -75,8 +100,10 @@ void SimController_SetFlightObservation(int airborne,
 void SimController_SetMode(int mode);
 int SimController_RequestJump(void);
 int SimController_IsJumping(void);
+float SimController_GetJumpWheelBalanceBlend(void);
 void SimController_Step(float dt);
 void SimController_GetOutput(SimControllerOutput *output);
+void SimController_GetControlBreakdown(SimControllerControlBreakdown *breakdown);
 
 #ifdef __cplusplus
 }

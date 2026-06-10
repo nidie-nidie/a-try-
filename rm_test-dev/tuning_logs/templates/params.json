@@ -1,0 +1,26 @@
+{
+  "test_name": "",
+  "operator": "",
+  "firmware_commit": "",
+  "robot": {
+    "leg_length_m": 0.2,
+    "wheel_torque_limit_nm": null,
+    "joint_torque_limit_nm": null
+  },
+  "steering": {
+    "yaw_rate_target_rad_s": null,
+    "yaw_accel_rad_s2": null,
+    "yaw_kp": null,
+    "yaw_kd": null,
+    "brake_threshold_rad_s": null
+  },
+  "balance": {
+    "pitch_target_rad": null,
+    "roll_target_rad": null
+  },
+  "safety": {
+    "pitch_limit_rad": null,
+    "roll_limit_rad": null,
+    "remote_timeout_ms": null
+  }
+}

@@ -19,6 +19,7 @@ add_library(rm_controller STATIC
     "${CONTROL_ROOT}/Components/Controller/Src/PID.c"
     "${CONTROL_ROOT}/Components/Device/Src/Motor.c"
     "${CONTROL_ROOT}/Components/Lib/Src/User_Lib.c"
+    "${CMAKE_CURRENT_LIST_DIR}/jump_state_machine.c"
     "${CMAKE_CURRENT_LIST_DIR}/sim_adapter.c"
     "${CMAKE_CURRENT_LIST_DIR}/port/sim_platform.c"
 )
@@ -41,6 +42,7 @@ target_link_libraries(rm_controller PUBLIC m)
 
 add_executable(mujoco_bridge
     "${CMAKE_CURRENT_LIST_DIR}/main_mujoco.c"
+    "${CMAKE_CURRENT_LIST_DIR}/steer_state_machine.c"
     "${CMAKE_CURRENT_LIST_DIR}/jump_telemetry.c"
 )
 

@@ -1,0 +1,42 @@
+# Duplicate files
+*(*)*
+
+# MATLAB files
+application/chassis/matlab_balance/slprj/
+*/slprj/
+*/codegen/
+*.prj
+
+# Keil v5 files
+*.bak
+*.lnp
+*.obj
+*.tmp
+*.TMP
+*.__i
+*.crf
+*.o
+*.d
+*.axf
+*.dep
+*.uvopt
+*.htm
+*.hsc
+~*
+*.map
+*uvgui*
+*JLinkLog.txt
+*.dbgconf
+.vscode/tags
+*.hex
+*.lnk
+
+*.scvd
+*.iex
+*.ini
+
+MDK-ARM/.vscode/
+
+# Real-robot tuning captures
+tuning_logs/runs/*
+!tuning_logs/runs/.gitkeep

@@ -28,7 +28,7 @@ mujoco_control_extract/sim/models/wheel_leg_urdf4_self_mesh_all.xml
 启动目录：/home/shun/MuJoCoBin/rm_control
 推荐启动：--mode safe --drive stand 或 --mode safe --drive forward
 初始姿态：默认 --ground-init，对应 init-key pos_debug_ground
-腿长目标：INIT_LEG_LENGTH = 0.20 m
+腿长目标：INIT_LEG_LENGTH = 0.200 m
 腿部 phi0 参考：INIT_L0_PITCH = pi/2
 底盘控制周期：CHASS_FSM_TIME = 3 ms
 默认前进速度：0.20 m/s
@@ -37,13 +37,13 @@ wheel override：默认开启，不加 --no-wheel-override
 调参时不使用：--zero-control、--zero-wheels、--invert-right-joints、--freeze-init
 ```
 
-当前 v1.0 的站立/前进效果最早是按 MuJoCo 侧 wheel override 开启时调出来的。现在同一套轮子平衡律已经接入 `sim_adapter` 的原生状态机输出路径，所以 `--no-wheel-override` 会关闭 `main_mujoco.c` 的覆盖层，但仍会由状态机输出等效的轮毂平衡扭矩。
+当前 MuJoCo 模型的质量、关节零位和实车模型并不完全一致。底盘 LQR/VMC 状态构造沿用实车逻辑，但默认仍由 `main_mujoco.c` 的 wheel override 对最终轮矩做仿真补偿，以保证 0.2 m 腿长下稳定站立和 W/S 行驶。
 
 ```bash
 ./mujoco_control_extract/build/mujoco_bridge --mode safe --drive stand --no-wheel-override
 ```
 
-如果要看完全未补平衡项的原始 LQR 轮毂输出，需要临时在 `sim_adapter.c` 中绕开 `sim_apply_native_wheel_balance()`。
+`--no-wheel-override` 会直接观察实车核心逻辑生成的原始 LQR 轮矩，当前仅用于诊断，不作为稳定运行配置。
 
 v1.0 wheel override 参数：
 
@@ -51,23 +51,23 @@ v1.0 wheel override 参数：
 pitch_target = -0.075
 pitch_kp     = 75.0
 pitch_kd     = 18.0
-pos_kp       = 65.0
-vel_kd       = 32.0
+pos_kp       = 180.0
+vel_kd       = 55.0
 pos_ramp     = 0.5
-drive_kff    = 100.0
+drive_kff    = 0.0
 yaw_kp       = 1.2
 yaw_kd       = 0.25
-wheel_limit  = 35.0
+wheel_limit  = 2.41
 ```
 
-v1.0 no-wheel-override 状态机调参记录：
+当前控制逻辑同步记录：
 
 ```text
-调参目标：关闭 main_mujoco.c 的 wheel override 后，状态机自身输出接近 override 开启时的效果。
-实现方式：把同一套 pitch / position / velocity / drive / yaw 平衡律接入 sim_adapter 原生输出。
+同步范围：左右底盘 LQR 状态构造、VMC 力矩组合、跳跃三阶段、roll/yaw/防劈叉补偿。
+保留差异：LQR 拟合系数不改；质量、轮距、腿部 PID 和 wheel override 使用 MuJoCo 参数。
 参数位置：Application/RobotParam/Inc/robot_param.h 中 MUJOCO_WHEEL_BALANCE_*。
 作用状态：CHASSIS_SAFE 和 CHASSIS_STAND_UP。
-验证结果：--mode safe --drive stand --no-wheel-override 6 s 稳定；--mode safe --drive forward --no-wheel-override 6 s 稳定；--mode stand --drive stand --no-wheel-override 可在 0.2 s 后切到 SAFE 并稳定。
+诊断结果：关闭 override 后，当前 XML 与原始实车轮矩不匹配，会发生明显失稳。
 ```
 
 v1.0 停车调参记录：
@@ -75,31 +75,38 @@ v1.0 停车调参记录：
 ```text
 调参目标：前进松手，从 DRIVE_FORWARD 切回 DRIVE_STAND 时减少轮毂扭矩突变。
 实现方式：drive_kff 前馈不再只在 DRIVE_FORWARD 生效，而是跟随 current_speed 平滑衰减到 0。
-验证命令：--mode safe --drive forward --auto-stop-time 2 --no-wheel-override
-验证结果：2 s 自动停车后可稳定回到 stand；override 开启和 --no-wheel-override 两条路径输出一致。
+验证命令：--mode safe --drive forward --auto-stop-time 2
+验证结果：2 s 自动停车后可稳定回到 stand。
 ```
 
 跳跃状态机试调记录：
 
 ```text
 调参目标：在快速蹬伸前增加基于实际 VMC_L0 的深压缩阶段，并在落地前后增加预落地/缓冲/恢复阶段；目标是延长腾空时间，同时让较高跳跃落地后还能恢复稳定站立。
+代码结构：phase 0-6、阶段计时、离地/触地判断和腿长目标斜坡位于 sim/jump_state_machine.c；sim_adapter.c 只负责输入观测和同步状态机输出，不再保存跳跃阶段切换逻辑。
+质量基准：MuJoCo XML 中所有 inertial mass 合计为 4.276255 kg；robot_param.h 中 BODY_MASS 也设为 4.276255 kg。曾尝试按左右腿拆成 2.138128 kg 的单腿等效质量，但普通站立会塌到 L0 约 0.119 m，说明当前控制链路中 BODY_MASS 应按 XML 总质量配置。
+控制解耦：每条腿分别计算 F0_gravity/F0_leg_pid/F0_jump_ff/F0_balance 和 Tp_lqr/Tp_split/Tp_pitch/Tp_leg_swing，最后集中合成 F0/Tp。VMC 进一步分别保留 tau_F0 和 tau_Tp，再求和得到关节力矩。
+阶段权重：状态机输出 LQR、防劈叉、pitch、腿摆四个 Tp 权重。普通站立固定恢复为 LQR=1、防劈叉=1；跳跃时 LQR=0.5 只在压缩和恢复阶段启用，防劈叉=0、pitch=1、腿摆=0。蹬伸、腾空和预落地不再混入 LQR Tp。
 状态 1 压缩：腿长目标按 rate 平滑下降，重力支撑前馈乘 support_scale；左右实际 VMC_L0 都进入 target+tolerance 并保持 hold 时间后才允许蹬伸。
-状态 2 蹬伸：目标切到 MAX_LEG_LENGTH，并给腿部 F0 增加 MUJOCO_JUMP_THRUST_FF 前馈；轮子仍接触地面时用小幅差动轮矩阻尼 base yaw 角速度，检测到实际离地后立即进入收腿。
+状态 2 蹬伸：腿长目标按 rate 向 MUJOCO_JUMP_EXTEND_L0 变化，并给腿部 F0 增加 MUJOCO_JUMP_THRUST_FF 前馈；实际左右 VMC_L0 达到 extend_l0-end_margin、满足最短蹬伸时间并连续两帧检测到几何离地后，才进入收腿。
 状态 3 收腿/腾空：四个主动关节直接用 PD 回到 XML 初态外形；在空中保持该外形，直到开始下降并接近地面。
-状态 4 预落地：当已经离地、base z 速度向下且左右轮共同离地间隙低于 preland_clearance 时，退出纯收腿 PD，腿长目标按 rate 伸到 preland_l0，为触地留出缓冲行程。
+状态 4 预落地：已经离地后，当左右轮共同离地间隙低于 preland_clearance，且 base 正在下降或轮地间隙正在缩小时，退出纯收腿 PD；腿长目标按 rate 伸到 preland_l0，为触地留出缓冲行程。
 状态 5 触地缓冲：首次触地后腿长目标按 rate 收向 buffer_l0，重力前馈和腿长 PID 都降低比例，先让腿吸收冲击；左右轮接触力都稳定超过阈值并保持 buffer_hold 后进入恢复。
-状态 6 恢复站立：腿长目标慢慢回 INIT_LEG_LENGTH，轮子普通平衡重新接管；恢复时间、pitch 角速度和双轮稳定触地都满足后，DRIVE_JUMP 才退出到 stand。
-异常退出：压缩阶段超过 timeout 仍未达到实际 VMC_L0 判据时取消跳跃并回到 INIT_LEG_LENGTH。
+状态 6 恢复站立：腿长目标慢慢回 INIT_LEG_LENGTH，轮子普通平衡在 0.20 s 内平滑接管；实际左右腿长、roll/pitch、pitch 角速度、水平速度和双轮稳定触地持续满足要求后，DRIVE_JUMP 才退出到 stand。
+异常退出：压缩、蹬伸、收腿、预落地和缓冲阶段均有超时或几何接地兜底，避免卡在单一阶段。
 XML 初态收腿：启动时保存解算、闭链稳定后的四个主动关节目标；进入收腿阶段和实际腾空后，直接用关节 PD 回到该目标。世界位置和轮子自转不参与“外形一致”比较。
-姿态处理：蹬伸阶段使用腿部虚拟髋力矩 Tp 对 pitch 做 PD 闭环，目标为 XML 初态 pitch-0.05 rad；收腿、预落地和缓冲阶段使用双轮反作用力矩继续压制 pitch，并切换到独立的 XML 初态 pitch+0.005 rad 落地目标。yaw 分两段处理：phase 2 借助轮地摩擦阻尼离地前的 yaw 角速度，phase 3-5 使用较小的 P+D 差动轮矩；phase 5 必须等双轮稳定触地后才启用 yaw 修正。
-默认深压缩参数：target=0.150 m，rate=0.300 m/s，support_scale=0.600，tolerance=0.010 m，hold=0.010 s，timeout=0.800 s。左右实际 VMC_L0 都进入 0.160 m 以内后才允许蹬伸。
-落地默认参数：preland=[clearance=0.30,l0=0.34,rate=1.20,pid=0.80]，touchdown_force=5 N，buffer=[l0=0.22,rate=0.30,support=0.85,pid=0.65,hold=0.20]，recover=[rate=0.18,time=0.35,pitch_rate=1.5]。
-落地对称补偿：F0_diff=[roll_kp=80,roll_kd=6,contact_kp=0,limit=10]，L0_diff=[roll_kp=0.40,roll_kd=0.03,limit=0.035]。负 roll 时会让左腿目标略长、右腿目标略短，同时给左右腿加反向 F0 差分，目标是减小单边先触地冲击。
-其他默认参数：thrust=235，takeoff_pitch_offset=-0.05，landing_pitch_offset=0.005，pitch_tp=[-10,-2,5]，pitch_wheel=[600,60,50]，takeoff_yaw=[kp=0,kd=1.2,limit=2.5]，landing_yaw=[start_phase=3,kp=1,kd=1,limit=1]，leg_swing=[-0.12,30,2,5]，tuck=[80,4,25]，extend_end_margin=0.06。注意：起跳 yaw 差动限幅为 2.5 Nm，但空中 pitch 控制仍使用 50 Nm 仿真上限，现实轮毂峰值约 2.5 Nm 时需要重新降级验证。
+姿态处理：phase 1-6 使用明确的腿部 pitch PD，目标为 XML 初态 pitch-0.05 rad；收腿、预落地和缓冲阶段使用双轮反作用力矩继续压制 pitch，落地参考同样为 XML 初态 pitch-0.05 rad。yaw 分两段处理：phase 2 借助轮地摩擦阻尼离地前的 yaw 角速度，phase 3-5 使用较小的 P+D 差动轮矩；phase 5 必须等双轮稳定触地后才启用 yaw 修正。
+默认压缩参数：target=0.170 m，rate=0.300 m/s，support_scale=0.600，tolerance=0.010 m，hold=0.010 s，timeout=0.800 s。左右实际 VMC_L0 都进入 0.180 m 以内后才允许蹬伸。
+落地默认参数：preland=[clearance=0.015,l0=0.24,rate=0.50,pid=0.80,timeout=0.60]，touchdown_force=5 N，buffer=[l0=0.18,rate=0.25,support=0.85,pid=0.65,hold=0.12]，recover=[rate=0.18,min_time=0.35,pitch_rate=1.0,speed_limit=0.12]。
+落地左右差分补偿：当前默认关闭，F0_diff=[roll_kp=0,roll_kd=0,contact_kp=0,limit=0]，L0_diff=[roll_kp=0,roll_kd=0,limit=0]，phase 4 间隙差腿长控制=[kp=0,rate=0,limit=0]。之前的左右差分会在单边触地时形成左右跷跷板，后续如需恢复只能小步加回。
+其他默认参数：thrust=0，extend_l0=0.25，extend_rate=0.90，extend_end_margin=0.01，takeoff_pitch_offset=-0.05，landing_pitch_offset=-0.19，pitch_tp=[-10,-2,5]，pitch_wheel=[600,60,2.41]，takeoff_yaw=[kp=0,kd=1.2,limit=2.41]，landing_yaw=[start_phase=3,kp=1,kd=1,limit=1]，leg_swing=[0,30,2,5]，tuck=[80,4,7]。
+最终执行器统一限幅：非跳跃阶段四个髋关节为 ±7 Nm，跳跃 phase 1-6 为 ±20 Nm，两个轮组始终为 ±2.41 Nm。限幅位于所有 VMC、MIT PD、空中收腿和轮组姿态补偿之后，因此最终写入 MuJoCo 的命令和实际执行器扭矩都不会越界。
+几何测量口径：实时日志中的 axisL 使用 XML joint 轴到轴距离，左/右腿分别测主动髋轴到轮轴的最短距离；--debug-geometry 额外输出 jOP/jGH 到轮轴的轴距，用来对照 LEG_L2。VMC_L0 仍是控制器内部虚拟腿长，两者差值用于后续几何标定。
+
 推荐验证：--mode safe --drive stand --jump-at 1 --no-wheel-override
-当前结果：默认深压缩参数下 wheel clearance max 约 0.354 m，连续明显离地约 0.536 s。独立落地 pitch 目标和更早的预落地伸腿将落地瞬态最大 pitch 从约 0.415 rad 降到约 0.251 rad；触地窗口最大 roll/yaw 约 0.038/0.103 rad，左右轮触地时刻差约 6 ms。MuJoCo 的 base_proxy 地面接触峰值为 0 N。
-旧的直接蹬伸对照需使用 --jump-skip-compression --jump-thrust 380，结果约为 0.068 m / 0.149 s；深压缩后不能继续沿用 380 的蹬伸前馈，否则落地冲击会显著增大并可能翻转。
-调参备注：增大 thrust 会延长腾空但提高落地冲击；减小 extend_end_margin 会蹬得更充分；leg_swing_offset 主要调起跳角动量，pitch_offset 主要调 pitch 参考，两者都应小步调整。
+当前结果：在 VMC/XML 几何较可信的 0.14-0.25 m 腿长范围内，默认跳跃可以完整经过 phase 1-6 并回到 phase 0，phase 3 不再误判触地，phase 4 能在轮地间隙缩小时进入。共同离地间隙约 0.056 m，base rise 约 0.199 m；触地后 1 s 相对起跳点前后/横向偏移约 0.163/0.009 m。
+旧的 235/380 推力前馈是按 20-50 Nm 以上的仿真执行器能力调出的，启用当前真实扭矩限幅后不再作为默认对照；继续提高 thrust、加深压缩或把伸腿目标推到 0.27 m 以上，会让髋关节长期饱和，并显著恶化空中和落地 pitch。
+调参备注：增大 thrust 或 extend_rate 会延长腾空但提高落地冲击；减小 extend_end_margin 会蹬得更充分；leg_swing_offset 主要调起跳角动量，pitch_offset 主要调 pitch 参考，两者都应小步调整。
 ```
 
 底盘状态机调参状态：
@@ -161,7 +168,7 @@ cmake -DMUJOCO_ROOT=/path/to/mujoco -S mujoco_control_extract/sim -B mujoco_cont
 --mode stand 会先走 STAND_UP 起立流程；目前 self_mesh_all.xml 下更稳的是直接从 SAFE 起步。
 --jump-at <time> 可以在 headless 中定时触发跳跃。
 --jump-telemetry <prefix> 输出 <prefix>.csv 原始数据和 <prefix>.svg 曲线图，并自动创建中间目录。
---jump-thrust <value> 可以临时覆盖跳跃腿部 F0 前馈，深压缩版本当前默认 235。
+--jump-thrust <value> 可以临时覆盖跳跃腿部 F0 前馈，扭矩受限稳定版本当前默认 0。
 --jump-skip-compression 跳过压缩阶段，用于与旧的直接蹬伸流程做 A/B 对照。
 --jump-compress-target / --jump-compress-rate 设置压缩腿长目标和目标变化速率。
 --jump-compress-support-scale 设置压缩阶段重力支撑前馈比例。
@@ -172,8 +179,9 @@ cmake -DMUJOCO_ROOT=/path/to/mujoco -S mujoco_control_extract/sim -B mujoco_cont
 --jump-pitch-tp-kp / --jump-pitch-tp-kd / --jump-pitch-tp-limit 用于蹬伸阶段的腿部 pitch 闭环。
 --jump-pitch-wheel-kp / --jump-pitch-wheel-kd / --jump-pitch-wheel-limit 用于收腿、预落地和缓冲阶段的轮子反作用力矩。
 --jump-leg-swing-offset / --jump-leg-swing-kp / --jump-leg-swing-kd / --jump-leg-swing-limit 用于蹬伸阶段腿摆角补偿。
+--jump-lqr-tp-weight / --jump-split-tp-weight / --jump-pitch-tp-weight / --jump-leg-swing-tp-weight 用于临时打开或关闭各个 Tp 通道，跳跃默认 0.5/0/1/0；LQR Tp 只在 phase 1/6 使用，phase 0 固定恢复为 1/1/0/0。
 --jump-tuck-kp / --jump-tuck-kd / --jump-tuck-limit 控制空中回到 XML 初态外形的关节 PD。
---jump-extend-end-margin 控制提前结束伸腿的余量，当前默认 0.06 m。
+--jump-extend-l0 / --jump-extend-end-margin / --jump-extend-rate 控制蹬伸目标腿长、离地确认余量和目标变化速率，当前默认 0.25 m / 0.01 m / 0.90 m/s。
 --jump-preland-clearance / --jump-preland-l0 / --jump-preland-rate / --jump-preland-pid-scale 用于临时覆盖预落地触发间隙、腿长、变化速率和 PID 比例。
 --jump-buffer-l0 / --jump-buffer-rate / --jump-buffer-support-scale / --jump-buffer-pid-scale 用于临时覆盖触地缓冲腿长、变化速率、重力支撑和腿长 PID 比例。
 --jump-landing-roll-kp / --jump-landing-roll-kd / --jump-landing-contact-kp / --jump-landing-balance-limit 用于临时覆盖落地 F0 差分补偿。
@@ -199,7 +207,7 @@ right_l0_set = landing_l0 - balance_l0
 
 ```text
 phase 2 且轮子仍接触地面：
-yaw_term = clamp(1.2 * yaw_rate, -2.5, 2.5)
+yaw_term = clamp(1.2 * yaw_rate, -2.41, 2.41)
 
 phase 3-5：
 yaw_term = clamp(1.0 * yaw_error + 1.0 * yaw_rate, -1.0, 1.0)
@@ -207,7 +215,7 @@ left_wheel_torque  = pitch_wheel_torque - yaw_term
 right_wheel_torque = pitch_wheel_torque + yaw_term
 ```
 
-phase 2 利用轮地摩擦在离地前减少 yaw 角动量；纯空中阶段的差动轮矩主要调整轮速，不能像有地面接触时一样直接产生稳定的 base yaw 力矩。phase 5 在双轮接触力都达到 5 N 后才恢复 yaw 差动，避免单轮先触地期间放大不对称冲击。最终左右轮输出仍受 `±50 Nm` 仿真限幅。
+phase 2 利用轮地摩擦在离地前减少 yaw 角动量；纯空中阶段的差动轮矩主要调整轮速，不能像有地面接触时一样直接产生稳定的 base yaw 力矩。phase 5 在双轮接触力都达到 5 N 后才恢复 yaw 差动，避免单轮先触地期间放大不对称冲击。最终左右轮输出仍受 `±2.41 Nm` 轮组扭矩限幅。
 
 跳跃遥测输出：
 
@@ -224,31 +232,63 @@ wheel_clearance_m 取左右轮离地间隙的较小值，表示两只轮子都�
 vmc_*_fn_raw_n 使用原 ground_detection 公式和 MuJoCo base 世界 z 加速度计算。
 vmc_*_fn_filtered_n 是独立四点均值；vmc_*_airborne 表示该值低于 3 N。
 contact_*_normal_n 是 mj_contactForce 给出的轮地接触法向力；contact_airborne 表示左右均不超过 0.1 N。
+requested_*_nm 是统一执行器限幅前的请求；cmd_*_nm 是限幅后写入 MuJoCo 的命令；applied_*_nm 是 MuJoCo 实际执行器力矩。
+CSV 还记录左右腿的四个 F0 分量、四个 Tp 分量、各阶段 Tp 权重，以及 VMC 映射后的 vmc_joint*_f0_nm/vmc_joint*_tp_nm。
 VMC 支持力字段只用于观测，不回写 INS、left_flag/right_flag，也不参与跳跃状态切换。
 轮地接触力和左右 wheel clearance 现在会作为跳跃落地阶段的观测输入，用于触发预落地、生成 phase 4 腿长目标差、触地缓冲和恢复站立。
 ```
 
-当前默认深压缩样例输出：
+重新调试进度：
+
+```text
+已完成：
+0. 固定质量基准：BODY_MASS 按 XML inertial 总质量 4.276255 kg。
+1. 补齐观测量：CSV 已包含 base_x/base_y、车体系前向/横向速度、F0/Tp 分解和执行器限幅后的命令。
+2. 建立轴向腿长跳跃基线：深压缩 0.15 m 会翻车；浅压缩 0.18 m + extend 0.22 m 可稳定回到 phase 0。
+3. 单项加回：LQR_Tp 半权重只在压缩/恢复使用；防劈叉和腿摆 Tp 在跳跃中关闭，保留明确的 pitch PD。
+4. 重调腿长轨迹：当前几何可信范围内的默认值为 compress=0.17、extend=0.25、extend_rate=0.90、thrust=0、tuck_limit=7。
+5. 修正 phase 3 触地误判、补回 phase 4、增加阶段超时、PID 分阶段清零、实际速度恢复判据和轮组平滑接管。
+6. 修正遥测电机坐标符号，右轮不再被误报为持续饱和。
+7. 完成第一档安全增高：extend_l0 设为 0.25 m、extend_rate 设为 0.90 m/s，共同离地间隙约 0.056 m，base rise 约 0.199 m。
+
+未完成：
+8. 轮组峰值仍达到 ±2.41 Nm，需要继续降低落地速度/pitch 控制冲突。
+9. 跳跃后水平位移仍约 0.16 m；需要继续查起跳瞬间水平冲量、position hold 接管时序和轮组限幅下的速度恢复。
+10. 0.27 m 以上腿长区间 VMC/XML 几何误差明显增大，暂不作为默认跳跃伸腿目标；后续若要更高跳跃，应先处理闭链几何标定或 XML 机构等效模型。
+```
+
+当前默认浅压缩样例输出：
 
 ```text
 mujoco_control_extract/output/jump_default.csv
 mujoco_control_extract/output/jump_default.svg
 
-base 实际离地后的最大上升：约 0.276 m
-左右轮共同最大离地间隙：约 0.354 m
-首次触地到跳跃状态退出：约 0.617 s
-落地瞬态最大 roll/pitch/yaw 误差：约 0.038/0.251/0.103 rad
-触地后 1 s roll/pitch/yaw 误差：约 -0.002/-0.099/-0.011 rad
-左右轮触地时间差：约 6 ms
-左右轮落地接触峰值：约 1911/1825 N
+默认稳定优先参数：
+compress_target=0.17 m，extend_l0=0.25 m，extend_rate=0.90 m/s，preland_l0=0.24 m，thrust=0，tuck_limit=7 Nm
+跳跃 Tp 权重：LQR=0.5（仅 phase 1/6），split=0，pitch=1，leg_swing=0
+
+默认结果：
+最终 phase：0，能够回到 stand
+普通站立最终 L0：约 0.216 / 0.216 m
+左右轮共同最大离地间隙：约 0.056 m
+base_rise：约 0.199 m
+跳跃全程最大 roll/pitch：约 0.038 / 0.227 rad
+左右轮触地时间差：约 4 ms
+左右轮接触峰值：约 535 / 571 N
+触地后 1 s 相对起跳点前后/横向偏移：约 0.163 / 0.009 m
+触地后 1 s pitch：约 -0.108 rad
 base_proxy 地面接触峰值：0 N
-腿部电机最大实际扭矩：约 45.197 Nm
-轮毂电机最大实际扭矩：约 50.000 Nm
+跳跃阶段腿部电机最大实际扭矩：约 11.1 Nm，低于 20 Nm 限制
+轮毂电机最大实际扭矩：2.410 Nm
+结论：当前默认不是高跳版本，而是在 0.25 m 以内几何可信范围和真实轮组扭矩限幅下的中等增高基线。后续继续提高高度前，应先处理水平位移和轮组饱和样本。
 
 默认测试的蹬伸阶段首次观测：
-MuJoCo 接触力归零约 1.297 s；5 mm 几何离地约 1.304 s。
-VMC 支持力在蹬伸切换瞬间约 1.249 s 出现一次短暂误报。
+VMC 支持力和 MuJoCo 接触力归零约 1.043 s。
 ```
+
+
+
+
 
 仿真窗口按键：
 

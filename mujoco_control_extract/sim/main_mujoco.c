@@ -10,7 +10,9 @@
 
 #include "Chassis_Task.h"
 #include "jump_telemetry.h"
+#include "Motor.h"
 #include "robot_param.h"
+#include "steer_state_machine.h"
 
 typedef struct
 {
@@ -46,9 +48,12 @@ typedef struct
     float forward_speed;
     float current_speed;
     float target_x;
+    float target_y;
     float position_hold_blend;
     float yaw_hold;
+    float yaw_rate_ref;
     int yaw_lock;
+    int planar_hold;
     int hold_position_pending;
     int hold_yaw_pending;
 } DriveCommand;
@@ -72,6 +77,9 @@ static int g_key_forward = 0;
 static int g_key_backward = 0;
 static int g_key_leg_up = 0;
 static int g_key_leg_down = 0;
+static int g_key_turn_left = 0;
+static int g_key_turn_right = 0;
+static float g_keyboard_steer_input = 0.0f;
 static double g_last_x = 0.0;
 static double g_last_y = 0.0;
 static double g_body_z_min = 1.0e9;
@@ -113,13 +121,13 @@ static double g_jump_base_contact_peak_time = 0.0;
 static mjtNum g_joint_ctrl_sign[4] = {1.0, 1.0, 1.0, 1.0};
 static mjtNum g_wheel_ctrl_sign[2] = {1.0, 1.0};
 static int g_use_wheel_balance_override = 1;
-static float g_balance_pitch_target = -0.075f;
-static float g_balance_pitch_kp = 75.0f;
-static float g_balance_pitch_kd = 18.0f;
-static float g_balance_pos_kp = 65.0f;
-static float g_balance_vel_kd = 32.0f;
+static float g_balance_pitch_target = MUJOCO_WHEEL_BALANCE_PITCH_TARGET;
+static float g_balance_pitch_kp = MUJOCO_WHEEL_BALANCE_PITCH_KP;
+static float g_balance_pitch_kd = MUJOCO_WHEEL_BALANCE_PITCH_KD;
+static float g_balance_pos_kp = MUJOCO_WHEEL_BALANCE_POS_KP;
+static float g_balance_vel_kd = MUJOCO_WHEEL_BALANCE_VEL_KD;
 static float g_balance_pos_ramp_time = 0.5f;
-static float g_balance_drive_kff = 100.0f;
+static float g_balance_drive_kff = MUJOCO_WHEEL_BALANCE_DRIVE_KFF;
 static double g_auto_stop_time = -1.0;
 static double g_auto_jump_time = -1.0;
 static float g_jump_thrust_ff = MUJOCO_JUMP_THRUST_FF;
@@ -153,7 +161,9 @@ static float g_jump_leg_swing_offset = MUJOCO_JUMP_LEG_SWING_OFFSET;
 static float g_jump_leg_swing_kp = MUJOCO_JUMP_LEG_SWING_KP;
 static float g_jump_leg_swing_kd = MUJOCO_JUMP_LEG_SWING_KD;
 static float g_jump_leg_swing_limit = MUJOCO_JUMP_LEG_SWING_LIMIT;
+static float g_jump_extend_l0 = MUJOCO_JUMP_EXTEND_L0;
 static float g_jump_extend_end_margin = MUJOCO_JUMP_EXTEND_END_MARGIN;
+static float g_jump_extend_rate = MUJOCO_JUMP_EXTEND_RATE;
 static float g_jump_preland_clearance = MUJOCO_JUMP_PRELAND_CLEARANCE;
 static float g_jump_preland_l0 = MUJOCO_JUMP_PRELAND_L0;
 static float g_jump_preland_rate = MUJOCO_JUMP_PRELAND_RATE;
@@ -172,13 +182,54 @@ static float g_jump_landing_balance_l0_limit = MUJOCO_JUMP_LANDING_BALANCE_L0_LI
 static float g_jump_landing_clearance_l0_kp = MUJOCO_JUMP_LANDING_CLEARANCE_L0_KP;
 static float g_jump_landing_clearance_l0_rate = MUJOCO_JUMP_LANDING_CLEARANCE_L0_RATE;
 static float g_jump_landing_clearance_l0_limit = MUJOCO_JUMP_LANDING_CLEARANCE_L0_LIMIT;
+static float g_jump_lqr_tp_weight = MUJOCO_JUMP_LQR_TP_WEIGHT;
+static float g_jump_split_tp_weight = MUJOCO_JUMP_SPLIT_TP_WEIGHT;
+static float g_jump_pitch_tp_weight = MUJOCO_JUMP_PITCH_TP_WEIGHT;
+static float g_jump_leg_swing_tp_weight = MUJOCO_JUMP_LEG_SWING_TP_WEIGHT;
 static float g_jump_tuck_kp = MUJOCO_JUMP_TUCK_KP;
 static float g_jump_tuck_kd = MUJOCO_JUMP_TUCK_KD;
 static float g_jump_tuck_torque_limit = MUJOCO_JUMP_TUCK_TORQUE_LIMIT;
-static float g_balance_yaw_kp = 1.2f;
-static float g_balance_yaw_kd = 0.25f;
-static float g_balance_wheel_limit = 35.0f;
+static float g_balance_yaw_kp = MUJOCO_WHEEL_BALANCE_YAW_KP;
+static float g_balance_yaw_kd = MUJOCO_WHEEL_BALANCE_YAW_KD;
+static float g_balance_wheel_limit = MUJOCO_WHEEL_BALANCE_LIMIT;
+static float g_steer_pitch_target = -0.12f;
+static float g_steer_yaw_kp = 3.0f;
+static float g_steer_yaw_rate_kd = 3.0f;
+static float g_steer_yaw_torque_limit = 1.45f;
 static float g_keyboard_leg_rate = 0.04f;
+static float g_initial_leg_length = INIT_LEG_LENGTH;
+static SteerStateMachine g_steer_machine;
+static int g_steer_command_was_active = 0;
+static int g_steer_pose_hold_active = 0;
+static SteerStateMachineConfig g_steer_config = {
+    .turn_leg_length = 0.20f,
+    .leg_rate = 0.30f,
+    .yaw_rate_max = 0.50f,
+    .yaw_accel_limit = 1.00f,
+    .active_time_limit = 0.0f,
+    .active_planar_error_limit = 0.60f,
+    .input_deadband = 0.05f,
+    .prepare_l0_tolerance = 0.012f,
+    .brake_gyro_tolerance = 0.08f,
+    .brake_linear_velocity_tolerance = 0.04f,
+    .brake_hold_time = 0.12f,
+    .recover_linear_velocity_tolerance = 0.05f,
+    .recover_l0_tolerance = 0.002f,
+    .abort_roll_limit = 0.30f,
+    .abort_pitch_limit = 0.35f,
+};
+static double g_auto_steer_time = -1.0;
+static double g_auto_steer_duration = 0.0;
+static float g_auto_steer_input = 1.0f;
+static int g_steer_metrics_valid = 0;
+static double g_steer_metrics_time = 0.0;
+static float g_steer_abs_roll_max = 0.0f;
+static float g_steer_abs_pitch_max = 0.0f;
+static float g_steer_abs_yaw_rate_max = 0.0f;
+static float g_steer_planar_error_max = 0.0f;
+static float g_steer_planar_speed_max = 0.0f;
+static float g_steer_yaw_start = 0.0f;
+static float g_steer_yaw_end = 0.0f;
 static JumpTelemetry *g_jump_telemetry = 0;
 static SupportForceObserver g_support_force_observer[2];
 static DriveCommand g_drive_command = {
@@ -188,9 +239,12 @@ static DriveCommand g_drive_command = {
     .forward_speed = 0.2f,
     .current_speed = 0.0f,
     .target_x = 0.0f,
+    .target_y = 0.0f,
     .position_hold_blend = 1.0f,
     .yaw_hold = 0.0f,
+    .yaw_rate_ref = 0.0f,
     .yaw_lock = 1,
+    .planar_hold = 0,
     .hold_position_pending = 1,
     .hold_yaw_pending = 1,
 };
@@ -389,6 +443,8 @@ static void sync_keyboard_drive_command(GLFWwindow *window, double dt)
     const int backward_down = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
     const int leg_up_down = glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
     const int leg_down_down = glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
+    const int turn_left_down = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS;
+    const int turn_right_down = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS;
     const int jump_down = glfwGetKey(window, GLFW_KEY_J) == GLFW_PRESS;
     const char *before = drive_command_name(&g_drive_command);
     float desired_speed = 0.0f;
@@ -397,6 +453,17 @@ static void sync_keyboard_drive_command(GLFWwindow *window, double dt)
     g_key_backward = backward_down;
     g_key_leg_up = leg_up_down;
     g_key_leg_down = leg_down_down;
+    g_key_turn_left = turn_left_down;
+    g_key_turn_right = turn_right_down;
+    g_keyboard_steer_input = 0.0f;
+    if (turn_left_down && !turn_right_down)
+    {
+        g_keyboard_steer_input = 1.0f;
+    }
+    else if (turn_right_down && !turn_left_down)
+    {
+        g_keyboard_steer_input = -1.0f;
+    }
 
     if (jump_down && !jump_was_down)
     {
@@ -553,6 +620,92 @@ static double wrap_pi(double value)
     return value;
 }
 
+static SteerDriveMode steer_drive_mode_from_drive(DriveMode mode)
+{
+    switch (mode)
+    {
+    case DRIVE_FORWARD:
+        return STEER_DRIVE_FORWARD;
+    case DRIVE_JUMP:
+        return STEER_DRIVE_JUMP;
+    case DRIVE_STAND:
+    default:
+        return STEER_DRIVE_STAND;
+    }
+}
+
+static float scheduled_steer_input(double time)
+{
+    if (g_auto_steer_time < 0.0 || g_auto_steer_duration <= 0.0)
+    {
+        return 0.0f;
+    }
+    if (time < g_auto_steer_time ||
+        time >= g_auto_steer_time + g_auto_steer_duration)
+    {
+        return 0.0f;
+    }
+    return (float)clamp_double(g_auto_steer_input, -1.0, 1.0);
+}
+
+static float current_steer_input(double time)
+{
+    if (fabsf(g_keyboard_steer_input) > 1.0e-5f)
+    {
+        return g_keyboard_steer_input;
+    }
+    return scheduled_steer_input(time);
+}
+
+static void update_steer_metrics(const SteerCommand *command,
+                                 const SimControllerState *state,
+                                 double dt)
+{
+    if (command == 0 || state == 0)
+    {
+        return;
+    }
+
+    if (!command->active)
+    {
+        return;
+    }
+
+    if (!g_steer_metrics_valid)
+    {
+        g_steer_metrics_valid = 1;
+        g_steer_metrics_time = 0.0;
+        g_steer_abs_roll_max = 0.0f;
+        g_steer_abs_pitch_max = 0.0f;
+        g_steer_abs_yaw_rate_max = 0.0f;
+        g_steer_planar_error_max = 0.0f;
+        g_steer_planar_speed_max = 0.0f;
+        g_steer_yaw_start = state->yaw;
+    }
+
+    const float planar_error_x = state->body_x - command->target_x;
+    const float planar_error_y = state->body_y - command->target_y;
+    const float planar_error =
+        sqrtf(planar_error_x * planar_error_x +
+              planar_error_y * planar_error_y);
+    const float planar_speed =
+        sqrtf(state->body_v * state->body_v +
+              state->body_v_y * state->body_v_y);
+
+    g_steer_metrics_time += dt;
+    g_steer_yaw_end = state->yaw;
+    g_steer_abs_roll_max =
+        fmaxf(g_steer_abs_roll_max, fabsf(state->roll));
+    g_steer_abs_pitch_max =
+        fmaxf(g_steer_abs_pitch_max, fabsf(state->pitch));
+    g_steer_abs_yaw_rate_max =
+        fmaxf(g_steer_abs_yaw_rate_max, fabsf(state->gyro[2]));
+    g_steer_planar_error_max =
+        fmaxf(g_steer_planar_error_max, planar_error);
+    g_steer_planar_speed_max =
+        fmaxf(g_steer_planar_speed_max, planar_speed);
+}
+
 static double sim_theta_transform(double angle, double dangle, int direction)
 {
     return wrap_pi((angle + dangle) * (double)direction);
@@ -577,7 +730,7 @@ static int calc_phi1_phi4(double phi0, double leg_length, double phi1_phi4[2])
 
 static void calc_initial_stand_joint_qpos(mjtNum joint_qpos[4])
 {
-    const double leg_length = INIT_LEG_LENGTH;
+    const double leg_length = g_initial_leg_length;
     const double phi0 = INIT_L0_PITCH;
     double phi1_phi4[2] = {0.0, 0.0};
 
@@ -840,6 +993,8 @@ static void read_state(const mjModel *m, const mjData *d, const ModelMap *map, S
     if (map->rotate_control_frame)
     {
         mjtNum rotated_quat[4];
+        mjtNum base_com_velocity[3];
+        mjtNum base_com_jacobian[3 * m->nv];
         mjtNum raw_gyro[3] = {
             d->qvel[base_qvel + 3],
             d->qvel[base_qvel + 4],
@@ -849,6 +1004,7 @@ static void read_state(const mjModel *m, const mjData *d, const ModelMap *map, S
         float body_x = 0.0f;
         float body_y = 0.0f;
         float body_v = 0.0f;
+        float body_v_y = 0.0f;
 
         rotate_quat_into_controller_frame(&d->qpos[base_qpos + 3], rotated_quat);
         quat_to_euler(rotated_quat, &state->roll, &state->pitch, &state->yaw);
@@ -858,14 +1014,31 @@ static void read_state(const mjModel *m, const mjData *d, const ModelMap *map, S
         state->gyro[1] = rotated_gyro[1];
         state->gyro[2] = rotated_gyro[2];
 
-        rotate_xy_into_controller_frame(d->qpos[base_qpos + 0], d->qpos[base_qpos + 1], &body_x, &body_y);
+        mj_jacBodyCom(m,
+                      d,
+                      base_com_jacobian,
+                      0,
+                      map->base_body);
+        mju_mulMatVec(base_com_velocity,
+                      base_com_jacobian,
+                      d->qvel,
+                      3,
+                      m->nv);
+        rotate_xy_into_controller_frame(d->xipos[3 * map->base_body + 0],
+                                        d->xipos[3 * map->base_body + 1],
+                                        &body_x,
+                                        &body_y);
         state->body_x = body_x;
         state->body_y = body_y;
         state->body_z = (float)d->qpos[base_qpos + 2];
         state->body_z_vel = (float)d->qvel[base_qvel + 2];
 
-        rotate_xy_into_controller_frame(d->qvel[base_qvel + 0], d->qvel[base_qvel + 1], &body_v, 0);
+        rotate_xy_into_controller_frame(base_com_velocity[0],
+                                        base_com_velocity[1],
+                                        &body_v,
+                                        &body_v_y);
         state->body_v = body_v;
+        state->body_v_y = body_v_y;
     }
     else
     {
@@ -879,6 +1052,7 @@ static void read_state(const mjModel *m, const mjData *d, const ModelMap *map, S
         state->body_z = (float)d->qpos[base_qpos + 2];
         state->body_z_vel = (float)d->qvel[base_qvel + 2];
         state->body_v = (float)d->qvel[base_qvel + 0];
+        state->body_v_y = (float)d->qvel[base_qvel + 1];
     }
 }
 
@@ -887,6 +1061,7 @@ static void update_drive_command(DriveCommand *command, const SimControllerState
     if (command->hold_position_pending)
     {
         command->target_x = state->body_x;
+        command->target_y = state->body_y;
         command->hold_position_pending = 0;
     }
     if (command->hold_yaw_pending)
@@ -913,6 +1088,8 @@ static void update_drive_command(DriveCommand *command, const SimControllerState
                                                                1.0);
             command->target_x = state->body_x +
                                 command->position_hold_blend * (command->target_x - state->body_x);
+            command->target_y = state->body_y +
+                                command->position_hold_blend * (command->target_y - state->body_y);
         }
     }
     else
@@ -1263,21 +1440,87 @@ static double measure_leg_length(const mjModel *m, const mjData *d, const ModelM
     const int hip_a_joint = left_leg ? map->joint[0].id : map->joint[2].id;
     const int hip_b_joint = left_leg ? map->joint[1].id : map->joint[3].id;
     const int wheel_joint = left_leg ? map->wheel[0].id : map->wheel[1].id;
+    mjtNum hip_anchor[3];
+    mjtNum wheel_anchor[3];
+    mjtNum hip_axis[3];
+    double delta[3];
+    double along_axis = 0.0;
+    double normal_sq = 0.0;
 
-    const int hip_a_body = m->jnt_bodyid[hip_a_joint];
-    const int hip_b_body = m->jnt_bodyid[hip_b_joint];
-    const int wheel_body = m->jnt_bodyid[wheel_joint];
-
-    double hip_mid[3];
+    (void)m;
     for (int i = 0; i < 3; ++i)
     {
-        hip_mid[i] = 0.5 * (d->xpos[3 * hip_a_body + i] + d->xpos[3 * hip_b_body + i]);
+        hip_anchor[i] =
+            0.5 * (d->xanchor[3 * hip_a_joint + i] + d->xanchor[3 * hip_b_joint + i]);
+        wheel_anchor[i] = d->xanchor[3 * wheel_joint + i];
+        hip_axis[i] = d->xaxis[3 * hip_a_joint + i];
+        delta[i] = (double)wheel_anchor[i] - (double)hip_anchor[i];
+        along_axis += delta[i] * (double)hip_axis[i];
     }
 
-    const double dx = d->xpos[3 * wheel_body + 0] - hip_mid[0];
-    const double dy = d->xpos[3 * wheel_body + 1] - hip_mid[1];
-    const double dz = d->xpos[3 * wheel_body + 2] - hip_mid[2];
-    return sqrt(dx * dx + dy * dy + dz * dz);
+    for (int i = 0; i < 3; ++i)
+    {
+        const double normal = delta[i] - along_axis * (double)hip_axis[i];
+        normal_sq += normal * normal;
+    }
+    return sqrt(normal_sq);
+}
+
+static int measure_leg_axis_geometry(const mjModel *m,
+                                     const mjData *d,
+                                     const ModelMap *map,
+                                     int left_leg,
+                                     double *axis_length,
+                                     double *axis_phi0)
+{
+    const int hip_a_joint = left_leg ? map->joint[0].id : map->joint[2].id;
+    const int hip_b_joint = left_leg ? map->joint[1].id : map->joint[3].id;
+    const int wheel_joint = left_leg ? map->wheel[0].id : map->wheel[1].id;
+    const double *base_xmat = &d->xmat[9 * map->base_body];
+    const double base_x_axis[3] = {base_xmat[0], base_xmat[3], base_xmat[6]};
+    const double base_z_axis[3] = {base_xmat[2], base_xmat[5], base_xmat[8]};
+    mjtNum hip_anchor[3];
+    mjtNum wheel_anchor[3];
+    mjtNum hip_axis[3];
+    double delta[3];
+    double normal[3];
+    double along_axis = 0.0;
+    double normal_sq = 0.0;
+    double local_x = 0.0;
+    double local_down = 0.0;
+
+    if (map->base_body < 0)
+    {
+        return 0;
+    }
+
+    for (int i = 0; i < 3; ++i)
+    {
+        hip_anchor[i] =
+            0.5 * (d->xanchor[3 * hip_a_joint + i] + d->xanchor[3 * hip_b_joint + i]);
+        wheel_anchor[i] = d->xanchor[3 * wheel_joint + i];
+        hip_axis[i] = d->xaxis[3 * hip_a_joint + i];
+        delta[i] = (double)wheel_anchor[i] - (double)hip_anchor[i];
+        along_axis += delta[i] * (double)hip_axis[i];
+    }
+
+    for (int i = 0; i < 3; ++i)
+    {
+        normal[i] = delta[i] - along_axis * (double)hip_axis[i];
+        normal_sq += normal[i] * normal[i];
+        local_x += normal[i] * base_x_axis[i];
+        local_down -= normal[i] * base_z_axis[i];
+    }
+
+    if (axis_length != 0)
+    {
+        *axis_length = sqrt(normal_sq);
+    }
+    if (axis_phi0 != 0)
+    {
+        *axis_phi0 = atan2(local_down, local_x);
+    }
+    return 1;
 }
 
 static double distance3(const mjtNum *a, const mjtNum *b)
@@ -1320,6 +1563,51 @@ static double measure_mid_to_site(const mjModel *m, const mjData *d, const Model
     }
 
     return distance3(hip_mid, site_pos);
+}
+
+static double joint_axis_distance(const mjModel *m, const mjData *d, const char *joint_a_name, const char *joint_b_name)
+{
+    const int joint_a = find_optional_id(m, mjOBJ_JOINT, joint_a_name);
+    const int joint_b = find_optional_id(m, mjOBJ_JOINT, joint_b_name);
+    double delta[3];
+    double along_axis = 0.0;
+    double normal_sq = 0.0;
+
+    if (joint_a < 0 || joint_b < 0)
+    {
+        return NAN;
+    }
+
+    for (int i = 0; i < 3; ++i)
+    {
+        delta[i] = (double)d->xanchor[3 * joint_b + i] - (double)d->xanchor[3 * joint_a + i];
+        along_axis += delta[i] * (double)d->xaxis[3 * joint_a + i];
+    }
+
+    for (int i = 0; i < 3; ++i)
+    {
+        const double normal = delta[i] - along_axis * (double)d->xaxis[3 * joint_a + i];
+        normal_sq += normal * normal;
+    }
+    return sqrt(normal_sq);
+}
+
+static double joint_axis_alignment(const mjModel *m, const mjData *d, const char *joint_a_name, const char *joint_b_name)
+{
+    const int joint_a = find_optional_id(m, mjOBJ_JOINT, joint_a_name);
+    const int joint_b = find_optional_id(m, mjOBJ_JOINT, joint_b_name);
+    double dot = 0.0;
+
+    if (joint_a < 0 || joint_b < 0)
+    {
+        return NAN;
+    }
+
+    for (int i = 0; i < 3; ++i)
+    {
+        dot += (double)d->xaxis[3 * joint_a + i] * (double)d->xaxis[3 * joint_b + i];
+    }
+    return dot;
 }
 
 static double measure_virtual_leg_length(const mjModel *m, const mjData *d, const ModelMap *map, int left_leg)
@@ -1370,15 +1658,42 @@ static void print_site_error(const mjModel *m, const mjData *d, const char *a, c
 
 static void print_geometry_debug(const mjModel *m, const mjData *d, const ModelMap *map, const char *tag)
 {
+    double left_axis_length = NAN;
+    double right_axis_length = NAN;
+    double left_axis_phi0 = NAN;
+    double right_axis_phi0 = NAN;
+    measure_leg_axis_geometry(m, d, map, 1, &left_axis_length, &left_axis_phi0);
+    measure_leg_axis_geometry(m, d, map, 0, &right_axis_length, &right_axis_phi0);
+
     printf("geometry[%s]\n", tag);
-    printf("  length left:  wheel=% .6f OP-N=% .6f KN-N=% .6f\n",
-           measure_leg_length(m, d, map, 1),
+    printf("  length left:  wheel_axis=% .6f OP-N=% .6f KN-N=% .6f\n",
+           left_axis_length,
            measure_mid_to_site(m, d, map, 1, "OP-N"),
            measure_mid_to_site(m, d, map, 1, "KN-N"));
-    printf("  length right: wheel=% .6f GH-F=% .6f CF-F=% .6f\n",
-           measure_leg_length(m, d, map, 0),
+    printf("  length right: wheel_axis=% .6f GH-F=% .6f CF-F=% .6f\n",
+           right_axis_length,
            measure_mid_to_site(m, d, map, 0, "GH-F"),
            measure_mid_to_site(m, d, map, 0, "CF-F"));
+    printf("  axis phi0: left=% .6f right=% .6f INIT_L0_PITCH=% .6f\n",
+           left_axis_phi0,
+           right_axis_phi0,
+           (double)INIT_L0_PITCH);
+    printf("  axis distance left:  jIO-wheel=% .6f jIJ-wheel=% .6f jOP-wheel=% .6f jKN-wheel=% .6f\n",
+           joint_axis_distance(m, d, "jIO", "jwheel_left"),
+           joint_axis_distance(m, d, "jIJ", "jwheel_left"),
+           joint_axis_distance(m, d, "jOP", "jwheel_left"),
+           joint_axis_distance(m, d, "jKN", "jwheel_left"));
+    printf("  axis distance right: jAG-wheel=% .6f jAB-wheel=% .6f jGH-wheel=% .6f jCF-wheel=% .6f\n",
+           joint_axis_distance(m, d, "jAG", "jwheel_right"),
+           joint_axis_distance(m, d, "jAB", "jwheel_right"),
+           joint_axis_distance(m, d, "jGH", "jwheel_right"),
+           joint_axis_distance(m, d, "jCF", "jwheel_right"));
+    printf("  axis dot left:  jOP-wheel=% .6f jKN-wheel=% .6f\n",
+           joint_axis_alignment(m, d, "jOP", "jwheel_left"),
+           joint_axis_alignment(m, d, "jKN", "jwheel_left"));
+    printf("  axis dot right: jGH-wheel=% .6f jCF-wheel=% .6f\n",
+           joint_axis_alignment(m, d, "jGH", "jwheel_right"),
+           joint_axis_alignment(m, d, "jCF", "jwheel_right"));
     printf("  equality residuals:\n");
     print_site_error(m, d, "IO-L", "MK-L");
     print_site_error(m, d, "OP-N", "KN-N");
@@ -1463,23 +1778,86 @@ static void clamp_output_to_model(const mjModel *m, const ModelMap *map, SimCont
     output->wheel_torque[1] = clamp_actuator_ctrl(m, map->actuator[5], output->wheel_torque[1]);
 }
 
-static void apply_wheel_balance_override(const SimControllerState *state, SimControllerOutput *output)
+static void clamp_output_to_motor_limits(SimControllerOutput *output, int jump_phase)
 {
-    const float pitch_term = g_balance_pitch_kp * (state->pitch - g_balance_pitch_target) +
+    const float joint_limit =
+        jump_phase > 0 ? MAX_JOINT_TORQUE_JUMP : MAX_JOINT_TORQUE;
+
+    for (int joint = 0; joint < 4; ++joint)
+    {
+        output->joint_torque[joint] =
+            (float)clamp_double(output->joint_torque[joint],
+                                -joint_limit,
+                                joint_limit);
+    }
+    for (int wheel = 0; wheel < 2; ++wheel)
+    {
+        output->wheel_torque[wheel] =
+            (float)clamp_double(output->wheel_torque[wheel],
+                                LK_MIN_MF_TORQUE,
+                                LK_MAX_MF_TORQUE);
+    }
+}
+
+static void apply_wheel_balance_override(const SimControllerState *state,
+                                         SimControllerOutput *output)
+{
+    const int steer_level_pitch =
+        g_drive_command.planar_hold &&
+        g_steer_machine.phase != STEER_PHASE_RECOVER;
+    const float pitch_target =
+        steer_level_pitch ? g_steer_pitch_target : g_balance_pitch_target;
+    float position_error = state->body_x - g_drive_command.target_x;
+    float velocity_error = state->body_v - g_drive_command.current_speed;
+
+    if (g_drive_command.mode == DRIVE_STAND &&
+        g_drive_command.yaw_lock)
+    {
+        const float forward_x = -sinf(state->yaw);
+        const float forward_y = cosf(state->yaw);
+        const float error_x = state->body_x - g_drive_command.target_x;
+        const float error_y = state->body_y - g_drive_command.target_y;
+        position_error = error_x * forward_x + error_y * forward_y;
+        position_error = (float)clamp_double(position_error, -0.12, 0.12);
+        velocity_error =
+            state->body_v * forward_x +
+            state->body_v_y * forward_y -
+            g_drive_command.current_speed;
+    }
+
+    const float pitch_term = g_balance_pitch_kp * (state->pitch - pitch_target) +
                              g_balance_pitch_kd * state->gyro[1];
     const float pos_term = g_drive_command.mode == DRIVE_FORWARD
                                ? 0.0f
                                : g_balance_pos_kp * g_drive_command.position_hold_blend *
-                                     (state->body_x - g_drive_command.target_x);
-    const float vel_term = g_balance_vel_kd * (state->body_v - g_drive_command.current_speed);
+                                     position_error;
+    const float vel_term = g_balance_vel_kd * velocity_error;
     const float drive_term = g_balance_drive_kff * g_drive_command.current_speed;
-    const float yaw_term = g_drive_command.yaw_lock
-                               ? g_balance_yaw_kp * (state->yaw - g_drive_command.yaw_hold) +
-                                     g_balance_yaw_kd * state->gyro[2]
-                               : 0.0f;
-    const float common = (float)clamp_double(pitch_term + pos_term + vel_term + drive_term,
-                                             -g_balance_wheel_limit,
-                                             g_balance_wheel_limit);
+    float yaw_term = 0.0f;
+    const float common =
+        (float)clamp_double(pitch_term + pos_term + vel_term + drive_term,
+                            -g_balance_wheel_limit,
+                            g_balance_wheel_limit);
+    if (g_drive_command.yaw_lock)
+    {
+        const float yaw_error =
+            (float)wrap_pi((double)state->yaw - g_drive_command.yaw_hold);
+        const float yaw_kp =
+            g_drive_command.planar_hold ? g_steer_yaw_kp : g_balance_yaw_kp;
+        const float yaw_rate_kd =
+            g_drive_command.planar_hold ? g_steer_yaw_rate_kd : g_balance_yaw_kd;
+        const float yaw_rate_error =
+            state->gyro[2] -
+            (g_drive_command.planar_hold ? g_drive_command.yaw_rate_ref : 0.0f);
+        const float yaw_limit =
+            g_drive_command.planar_hold ? fabsf(g_steer_yaw_torque_limit)
+                                        : g_balance_wheel_limit;
+        yaw_term =
+            (float)clamp_double(yaw_kp * yaw_error +
+                                    yaw_rate_kd * yaw_rate_error,
+                                -yaw_limit,
+                                yaw_limit);
+    }
 
     output->wheel_torque[0] = common - yaw_term;
     output->wheel_torque[1] = common + yaw_term;
@@ -1634,8 +2012,13 @@ static void step_controller(const mjModel *m,
 {
     SimControllerState state;
     SimControllerOutput output;
+    SimControllerControlBreakdown control_breakdown;
+    SteerCommand steer_command;
+    double requested_torque[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
     read_state(m, d, map, &state);
+    memset(&control_breakdown, 0, sizeof(control_breakdown));
+    memset(&steer_command, 0, sizeof(steer_command));
     update_body_z_range(&state);
     update_jump_attitude_metrics(&state, d->time, m->opt.timestep);
     if (zero_control)
@@ -1681,6 +2064,78 @@ static void step_controller(const mjModel *m,
                                            observation_contact_force_f);
         SimController_SetState(&state);
         update_drive_command(&g_drive_command, &state, m->opt.timestep);
+        {
+            SteerObservation steer_observation = {
+                .dt = (float)m->opt.timestep,
+                .input = current_steer_input(d->time),
+                .current_yaw = state.yaw,
+                .gyro_z = state.gyro[2],
+                .left_l0 = left.L0,
+                .right_l0 = right.L0,
+                .body_x = state.body_x,
+                .body_y = state.body_y,
+                .body_v_x = state.body_v,
+                .body_v_y = state.body_v_y,
+                .base_leg_set = g_drive_command.leg_set,
+                .base_yaw_hold = g_drive_command.yaw_hold,
+                .roll = state.roll,
+                .pitch = state.pitch,
+                .drive_mode = steer_drive_mode_from_drive(g_drive_command.mode),
+                .chassis_safe = chassis_move.mode == CHASSIS_SAFE,
+                .start_enabled = chassis_move.start_flag == 1,
+                .jump_active = SimController_IsJumping(),
+            };
+            SteerStateMachine_Step(&g_steer_machine,
+                                   &steer_observation,
+                                   &steer_command);
+            if (steer_command.active)
+            {
+                g_steer_pose_hold_active = 1;
+                g_drive_command.leg_set = steer_command.leg_set;
+                g_drive_command.yaw_hold = steer_command.yaw_hold;
+                g_drive_command.yaw_rate_ref = steer_command.yaw_rate_ref;
+                g_drive_command.yaw_lock = steer_command.yaw_lock;
+                g_drive_command.planar_hold = steer_command.planar_lock;
+                g_drive_command.target_x = steer_command.target_x;
+                g_drive_command.target_y = steer_command.target_y;
+                g_drive_command.position_hold_blend = 1.0f;
+                if (steer_command.force_stand)
+                {
+                    g_drive_command.mode = DRIVE_STAND;
+                    g_drive_command.current_speed = 0.0f;
+                }
+            }
+            else
+            {
+                g_drive_command.yaw_rate_ref = 0.0f;
+                g_drive_command.planar_hold = 0;
+                if (g_steer_command_was_active)
+                {
+                    const int normal_steer_exit =
+                        g_steer_machine.phase == STEER_PHASE_IDLE;
+                    g_drive_command.target_x =
+                        normal_steer_exit ? g_steer_machine.anchor_x
+                                          : state.body_x;
+                    g_drive_command.target_y =
+                        normal_steer_exit ? g_steer_machine.anchor_y
+                                          : state.body_y;
+                    g_drive_command.yaw_hold = state.yaw;
+                    g_drive_command.current_speed = 0.0f;
+                    g_drive_command.position_hold_blend =
+                        normal_steer_exit ? 1.0f : 0.0f;
+                    if (!normal_steer_exit)
+                    {
+                        g_steer_pose_hold_active = 0;
+                    }
+                    g_drive_command.hold_position_pending = 0;
+                    g_drive_command.hold_yaw_pending = 0;
+                }
+            }
+            g_steer_command_was_active = steer_command.active;
+            update_steer_metrics(&steer_command,
+                                 &state,
+                                 m->opt.timestep);
+        }
         SimController_SetDriveContext(g_drive_command.mode == DRIVE_FORWARD,
                                       g_drive_command.position_hold_blend,
                                       g_drive_command.yaw_lock);
@@ -1691,6 +2146,7 @@ static void step_controller(const mjModel *m,
                                  g_drive_command.yaw_lock ? g_drive_command.yaw_hold : 0.0f);
         SimController_Step((float)m->opt.timestep);
         SimController_GetOutput(&output);
+        SimController_GetControlBreakdown(&control_breakdown);
         const int airborne = wheels_are_airborne(m, d, map);
         const int jump_phase = chassis_move.jump_flag > chassis_move.jump_flag2
                                    ? chassis_move.jump_flag
@@ -1709,6 +2165,10 @@ static void step_controller(const mjModel *m,
         {
             apply_wheel_balance_override(&state, &output);
         }
+        const float native_wheel_torque[2] = {
+            output.wheel_torque[0],
+            output.wheel_torque[1],
+        };
         if (suppress_wheel_balance)
         {
             output.wheel_torque[0] = 0.0f;
@@ -1721,6 +2181,25 @@ static void step_controller(const mjModel *m,
                                         observation_contact_force,
                                         &output);
         }
+        else if (jump_phase == 6)
+        {
+            SimControllerOutput jump_hold_output = output;
+            apply_jump_pitch_wheel_hold(&state,
+                                        jump_phase,
+                                        observation_contact_force,
+                                        &jump_hold_output);
+            const float native_blend =
+                (float)clamp_double(
+                    SimController_GetJumpWheelBalanceBlend(),
+                    0.0,
+                    1.0);
+            output.wheel_torque[0] =
+                (1.0f - native_blend) * jump_hold_output.wheel_torque[0] +
+                native_blend * native_wheel_torque[0];
+            output.wheel_torque[1] =
+                (1.0f - native_blend) * jump_hold_output.wheel_torque[1] +
+                native_blend * native_wheel_torque[1];
+        }
         if (zero_wheels)
         {
             output.wheel_torque[0] = 0.0f;
@@ -1731,6 +2210,13 @@ static void step_controller(const mjModel *m,
             output.joint_torque[2] = -output.joint_torque[2];
             output.joint_torque[3] = -output.joint_torque[3];
         }
+        for (int joint = 0; joint < 4; ++joint)
+        {
+            requested_torque[joint] = output.joint_torque[joint];
+        }
+        requested_torque[4] = output.wheel_torque[0];
+        requested_torque[5] = output.wheel_torque[1];
+        clamp_output_to_motor_limits(&output, jump_phase);
         clamp_output_to_model(m, map, &output);
     }
     write_output(d, map, &output);
@@ -1794,12 +2280,22 @@ static void step_controller(const mjModel *m,
         for (int actuator = 0; actuator < 6; ++actuator)
         {
             const int actuator_id = map->actuator[actuator];
-            command_torque[actuator] = d->ctrl[actuator_id];
-            applied_torque[actuator] = d->actuator_force[actuator_id];
+            const double controller_sign =
+                actuator < 4
+                    ? (double)g_joint_ctrl_sign[actuator]
+                    : (double)g_wheel_ctrl_sign[actuator - 4];
+            command_torque[actuator] =
+                controller_sign * d->ctrl[actuator_id];
+            applied_torque[actuator] =
+                controller_sign * d->actuator_force[actuator_id];
         }
         JumpTelemetry_Record(
             g_jump_telemetry,
             d->time,
+            state.body_x,
+            state.body_y,
+            state.body_v,
+            state.body_v_y,
             d->qpos[base_qpos + 2],
             min_clearance,
             wheel_clearance_lr,
@@ -1810,8 +2306,10 @@ static void step_controller(const mjModel *m,
             vmc_airborne,
             contact_normal_force,
             contact_airborne,
+            requested_torque,
             command_torque,
             applied_torque,
+            &control_breakdown,
             g_drive_command.mode == DRIVE_JUMP || SimController_IsJumping(),
             chassis_move.jump_flag > chassis_move.jump_flag2
                 ? chassis_move.jump_flag
@@ -1841,28 +2339,38 @@ static void step_controller(const mjModel *m,
         const double wheel_left = measure_leg_length(m, d, map, 1);
         const double wheel_right = measure_leg_length(m, d, map, 0);
 
-        printf("t=%6.3f drive=%s jump=[%d %d] keys=[F:%d B:%d U:%d D:%d] vx_ref=% .3f x_ref=% .3f pos_hold=% .2f leg_ref=% .3f pos=[% .3f % .3f % .3f] rpy=[% .3f % .3f % .3f] "
-               "vmcL0=[% .3f % .3f] siteL=[% .3f % .3f] wheelL=[% .3f % .3f] "
+        printf("t=%6.3f drive=%s steer=%s steer_in=% .1f jump=[%d %d] keys=[F:%d B:%d U:%d D:%d L:%d R:%d] vx_ref=% .3f xy_ref=[% .3f % .3f] pos_hold=% .2f planar=%d leg_ref=% .3f yaw_ref=% .3f yaw_rate_ref=% .3f pos=[% .3f % .3f % .3f] rpy=[% .3f % .3f % .3f] wheel_v=[% .3f % .3f] "
+               "vmcL0=[% .3f % .3f] siteL=[% .3f % .3f] axisL=[% .3f % .3f] "
                "phi1=[% .3f % .3f] phi4=[% .3f % .3f] "
                "u=[% .2f % .2f % .2f % .2f | % .2f % .2f]\n",
                d->time,
                drive_command_name(&g_drive_command),
+               SteerStateMachine_PhaseName(g_steer_machine.phase),
+               current_steer_input(d->time),
                chassis_move.jump_flag2,
                chassis_move.jump_flag,
                g_key_forward,
                g_key_backward,
                g_key_leg_up,
                g_key_leg_down,
+               g_key_turn_left,
+               g_key_turn_right,
                g_drive_command.current_speed,
                g_drive_command.target_x,
+               g_drive_command.target_y,
                g_drive_command.position_hold_blend,
+               g_drive_command.planar_hold,
                g_drive_command.leg_set,
+               g_drive_command.yaw_hold,
+               g_drive_command.yaw_rate_ref,
                state.body_x,
                state.body_y,
                state.body_z,
                state.roll,
                state.pitch,
                state.yaw,
+               state.wheel_vel[0],
+               state.wheel_vel[1],
                left.L0,
                right.L0,
                virtual_left,
@@ -2042,6 +2550,19 @@ int main(int argc, char **argv)
         {
             sim_time = atof(argv[++i]);
         }
+        else if (strcmp(argv[i], "--init-leg-length") == 0 && i + 1 < argc)
+        {
+            g_initial_leg_length = (float)atof(argv[++i]);
+            if (g_initial_leg_length < MIN_LEG_LENGTH ||
+                g_initial_leg_length > MAX_LEG_LENGTH)
+            {
+                fprintf(stderr,
+                        "--init-leg-length expects %.3f..%.3f m.\n",
+                        (double)MIN_LEG_LENGTH,
+                        (double)MAX_LEG_LENGTH);
+                return 2;
+            }
+        }
         else if (strcmp(argv[i], "--standup-time") == 0 && i + 1 < argc)
         {
             standup_time = atof(argv[++i]);
@@ -2053,6 +2574,72 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--auto-stop-time") == 0 && i + 1 < argc)
         {
             g_auto_stop_time = atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--auto-steer-at") == 0 && i + 1 < argc)
+        {
+            g_auto_steer_time = atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--auto-steer-duration") == 0 && i + 1 < argc)
+        {
+            g_auto_steer_duration = atof(argv[++i]);
+            if (g_auto_steer_duration < 0.0)
+            {
+                g_auto_steer_duration = 0.0;
+            }
+        }
+        else if (strcmp(argv[i], "--auto-steer-input") == 0 && i + 1 < argc)
+        {
+            g_auto_steer_input =
+                (float)clamp_double(atof(argv[++i]), -1.0, 1.0);
+        }
+        else if (strcmp(argv[i], "--steer-leg-length") == 0 && i + 1 < argc)
+        {
+            g_steer_config.turn_leg_length = (float)atof(argv[++i]);
+            if (g_steer_config.turn_leg_length < MIN_LEG_LENGTH ||
+                g_steer_config.turn_leg_length > MAX_LEG_LENGTH)
+            {
+                fprintf(stderr,
+                        "--steer-leg-length expects %.3f..%.3f m.\n",
+                        (double)MIN_LEG_LENGTH,
+                        (double)MAX_LEG_LENGTH);
+                return 2;
+            }
+        }
+        else if (strcmp(argv[i], "--steer-leg-rate") == 0 && i + 1 < argc)
+        {
+            g_steer_config.leg_rate = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-yaw-rate") == 0 && i + 1 < argc)
+        {
+            g_steer_config.yaw_rate_max = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-yaw-accel") == 0 && i + 1 < argc)
+        {
+            g_steer_config.yaw_accel_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-active-limit") == 0 && i + 1 < argc)
+        {
+            g_steer_config.active_time_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-planar-limit") == 0 && i + 1 < argc)
+        {
+            g_steer_config.active_planar_error_limit = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-yaw-kp") == 0 && i + 1 < argc)
+        {
+            g_steer_yaw_kp = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-pitch-target") == 0 && i + 1 < argc)
+        {
+            g_steer_pitch_target = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-yaw-rate-kd") == 0 && i + 1 < argc)
+        {
+            g_steer_yaw_rate_kd = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--steer-yaw-torque-limit") == 0 && i + 1 < argc)
+        {
+            g_steer_yaw_torque_limit = (float)atof(argv[++i]);
         }
         else if (strcmp(argv[i], "--jump-at") == 0 && i + 1 < argc)
         {
@@ -2158,9 +2745,33 @@ int main(int argc, char **argv)
         {
             g_jump_leg_swing_limit = (float)atof(argv[++i]);
         }
+        else if (strcmp(argv[i], "--jump-lqr-tp-weight") == 0 && i + 1 < argc)
+        {
+            g_jump_lqr_tp_weight = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-split-tp-weight") == 0 && i + 1 < argc)
+        {
+            g_jump_split_tp_weight = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-pitch-tp-weight") == 0 && i + 1 < argc)
+        {
+            g_jump_pitch_tp_weight = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-leg-swing-tp-weight") == 0 && i + 1 < argc)
+        {
+            g_jump_leg_swing_tp_weight = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-extend-l0") == 0 && i + 1 < argc)
+        {
+            g_jump_extend_l0 = (float)atof(argv[++i]);
+        }
         else if (strcmp(argv[i], "--jump-extend-end-margin") == 0 && i + 1 < argc)
         {
             g_jump_extend_end_margin = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--jump-extend-rate") == 0 && i + 1 < argc)
+        {
+            g_jump_extend_rate = (float)atof(argv[++i]);
         }
         else if (strcmp(argv[i], "--jump-preland-l0") == 0 && i + 1 < argc)
         {
@@ -2311,6 +2922,10 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--no-wheel-override") == 0)
         {
             g_use_wheel_balance_override = 0;
+        }
+        else if (strcmp(argv[i], "--wheel-override") == 0)
+        {
+            g_use_wheel_balance_override = 1;
         }
         else if ((strcmp(argv[i], "--override-pitch-kp") == 0 ||
                   strcmp(argv[i], "--stand-pitch-kp") == 0) &&
@@ -2497,6 +3112,7 @@ int main(int argc, char **argv)
     memcpy(g_xml_initial_qpos, d->qpos, sizeof(mjtNum) * m->nq);
 
     SimController_Init();
+    SteerStateMachine_Init(&g_steer_machine, &g_steer_config);
     SimController_SetAirbornePoseTarget(g_airborne_pose_target);
     SimController_SetAirbornePoseGains(g_jump_tuck_kp,
                                        g_jump_tuck_kd,
@@ -2517,7 +3133,13 @@ int main(int argc, char **argv)
                                   g_jump_leg_swing_kp,
                                   g_jump_leg_swing_kd,
                                   g_jump_leg_swing_limit);
-    SimController_SetJumpExtendEndMargin(g_jump_extend_end_margin);
+    SimController_SetJumpTpWeights(g_jump_lqr_tp_weight,
+                                   g_jump_split_tp_weight,
+                                   g_jump_pitch_tp_weight,
+                                   g_jump_leg_swing_tp_weight);
+    SimController_SetJumpExtend(g_jump_extend_l0,
+                                g_jump_extend_end_margin,
+                                g_jump_extend_rate);
     SimController_SetJumpLandingLegLengths(g_jump_preland_l0,
                                            g_jump_buffer_l0);
     SimController_SetJumpPrelandClearance(g_jump_preland_clearance);
@@ -2558,7 +3180,7 @@ int main(int argc, char **argv)
                jump_telemetry_prefix);
     }
     g_drive_command.current_speed = 0.0f;
-    g_drive_command.leg_set = INIT_LEG_LENGTH;
+    g_drive_command.leg_set = g_initial_leg_length;
     g_drive_command.roll_set = INIT_ROLL;
     g_drive_command.position_hold_blend = start_mode == CHASSIS_STAND_UP ? 0.0f : 1.0f;
     g_drive_command.hold_position_pending = 1;
@@ -2581,7 +3203,37 @@ int main(int argc, char **argv)
            g_balance_yaw_kp,
            g_balance_yaw_kd,
            g_balance_wheel_limit);
+    printf("Steer override: pitch_target=%.3f yaw_kp=%.3f yaw_rate_kd=%.3f yaw_torque_limit=%.3f\n",
+           g_steer_pitch_target,
+           g_steer_yaw_kp,
+           g_steer_yaw_rate_kd,
+           g_steer_yaw_torque_limit);
+    printf("Steer state machine: turn_l0=%.3f leg_rate=%.3f yaw_rate=%.3f yaw_accel=%.3f active_limit=%.3f planar_limit=%.3f input_deadband=%.3f brake_gyro=%.3f brake_v=%.3f brake_hold=%.3f recover_v=%.3f abort_rp=[%.3f %.3f]\n",
+           g_steer_config.turn_leg_length,
+           g_steer_config.leg_rate,
+           g_steer_config.yaw_rate_max,
+           g_steer_config.yaw_accel_limit,
+           g_steer_config.active_time_limit,
+           g_steer_config.active_planar_error_limit,
+           g_steer_config.input_deadband,
+           g_steer_config.brake_gyro_tolerance,
+           g_steer_config.brake_linear_velocity_tolerance,
+           g_steer_config.brake_hold_time,
+           g_steer_config.recover_linear_velocity_tolerance,
+           g_steer_config.abort_roll_limit,
+           g_steer_config.abort_pitch_limit);
+    if (g_auto_steer_time >= 0.0 && g_auto_steer_duration > 0.0)
+    {
+        printf("Auto steer: start=%.3f duration=%.3f input=%.3f\n",
+               g_auto_steer_time,
+               g_auto_steer_duration,
+               g_auto_steer_input);
+    }
     printf("Jump thrust feedforward: %.3f\n", g_jump_thrust_ff);
+    printf("Motor torque limits: joint_normal=%.3f joint_jump=%.3f wheel=%.3f Nm\n",
+           MAX_JOINT_TORQUE,
+           MAX_JOINT_TORQUE_JUMP,
+           LK_MAX_MF_TORQUE);
     printf("Jump pitch wheel hold: kp=%.3f kd=%.3f limit=%.3f\n",
            g_jump_pitch_wheel_kp,
            g_jump_pitch_wheel_kd,
@@ -2610,7 +3262,15 @@ int main(int argc, char **argv)
            g_jump_leg_swing_kp,
            g_jump_leg_swing_kd,
            g_jump_leg_swing_limit);
-    printf("Jump extend end margin: %.3f\n", g_jump_extend_end_margin);
+    printf("Jump Tp weights: lqr=%.3f split=%.3f pitch=%.3f leg_swing=%.3f\n",
+           g_jump_lqr_tp_weight,
+           g_jump_split_tp_weight,
+           g_jump_pitch_tp_weight,
+           g_jump_leg_swing_tp_weight);
+    printf("Jump extend: target_l0=%.3f end_margin=%.3f rate=%.3f\n",
+           g_jump_extend_l0,
+           g_jump_extend_end_margin,
+           g_jump_extend_rate);
     printf("Jump landing leg lengths: clearance=%.3f preland_l0=%.3f preland_rate=%.3f preland_pid_scale=%.3f buffer_l0=%.3f buffer_rate=%.3f buffer_support=%.3f buffer_pid=%.3f\n",
            g_jump_preland_clearance,
            g_jump_preland_l0,
@@ -2662,6 +3322,18 @@ int main(int argc, char **argv)
                g_body_z_min,
                g_body_z_max,
                g_body_z_max - g_body_z_min);
+    }
+    if (g_steer_metrics_valid)
+    {
+        printf("Steer summary: duration=%.3f yaw_delta=%.3f max_abs_roll=%.3f max_abs_pitch=%.3f max_abs_yaw_rate=%.3f max_planar_error=%.3f max_planar_speed=%.3f\n",
+               g_steer_metrics_time,
+               (float)wrap_pi((double)g_steer_yaw_end -
+                              (double)g_steer_yaw_start),
+               g_steer_abs_roll_max,
+               g_steer_abs_pitch_max,
+               g_steer_abs_yaw_rate_max,
+               g_steer_planar_error_max,
+               g_steer_planar_speed_max);
     }
     if (g_airborne_metrics_valid)
     {
